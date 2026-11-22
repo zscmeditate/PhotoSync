@@ -1,0 +1,337 @@
+// PhotoSync 数据模型（一次建全，Phase 1 只使用 users / devices / refresh_tokens）
+// 约定：
+// - id 一律为服务端生成的 UUID（@db.Uuid）
+// - 表名映射为 snake_case 复数（@@map），字段名保持 camelCase（列名即 camelCase）
+// - 时间均为 UTC DateTime
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===================== 枚举 =====================
+
+enum UserStatus {
+  active
+  disabled
+}
+
+enum DevicePlatform {
+  android
+  ios
+  windows
+  macos
+  linux
+  unknown
+}
+
+enum CredentialStatus {
+  active
+  revoked
+}
+
+enum MemberRole {
+  owner
+  admin
+  member
+  viewer
+}
+
+enum SyncEventType {
+  file_created
+  file_updated
+  file_deleted
+  file_renamed
+  file_restored
+  metadata_updated
+  conflict_detected
+  conflict_resolved
+}
+
+enum UploadSessionStatus {
+  pending
+  uploading
+  completed
+  aborted
+}
+
+enum ConflictStatus {
+  pending
+  resolved
+}
+
+// ===================== 认证与设备 =====================
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  passwordHash String
+  displayName  String
+  status       UserStatus @default(active)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  devices       Device[]
+  refreshTokens RefreshToken[]
+  ownedSpaces   SyncSpace[]
+
+  @@map("users")
+}
+
+model Device {
+  id               String           @id @default(uuid()) @db.Uuid
+  userId           String           @db.Uuid
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceName       String
+  platform         DevicePlatform   @default(android)
+  credentialStatus CredentialStatus @default(active)
+  lastSeenAt       DateTime?
+  createdAt        DateTime         @default(now())
+
+  refreshTokens     RefreshToken[]
+  folderMappings    FolderMapping[]
+  spaceMembers      SpaceMember[]
+  syncCursors       SyncCursor[]
+  uploadSessions    UploadSession[]
+  modifiedFiles     SyncFile[]
+  createdVersions   FileVersion[]
+  emittedEvents     SyncEvent[]
+  deletedTrashItems TrashItem[]
+
+  @@index([userId])
+  @@map("devices")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // 可选绑定设备：登录签发的 token 为空，设备流程签发的 token 关联设备
+  deviceId  String?   @db.Uuid
+  device    Device?   @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  // 仅保存 SHA-256(token)，明文 token 只在签发时返回一次
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([deviceId])
+  @@map("refresh_tokens")
+}
+
+// ===================== 同步空间 =====================
+
+model SyncSpace {
+  id          String   @id @default(uuid()) @db.Uuid
+  ownerId     String   @db.Uuid
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  // 空间内单调递增的事件序号，用于增量拉取
+  revision    BigInt   @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members        SpaceMember[]
+  folderMappings FolderMapping[]
+  files          SyncFile[]
+  events         SyncEvent[]
+  cursors        SyncCursor[]
+  uploadSessions UploadSession[]
+  conflicts      SyncConflict[]
+  trashItems     TrashItem[]
+
+  @@index([ownerId])
+  @@map("sync_spaces")
+}
+
+model SpaceMember {
+  id       String     @id @default(uuid()) @db.Uuid
+  spaceId  String     @db.Uuid
+  space    SyncSpace  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  deviceId String     @db.Uuid
+  device   Device     @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  role     MemberRole @default(member)
+  joinedAt DateTime   @default(now())
+
+  @@unique([spaceId, deviceId])
+  @@index([deviceId])
+  @@map("space_members")
+}
+
+model FolderMapping {
+  id             String    @id @default(uuid()) @db.Uuid
+  deviceId       String    @db.Uuid
+  device         Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  spaceId        String    @db.Uuid
+  space          SyncSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  // 设备端展示用的本地路径标签（不存绝对路径，避免泄露设备目录结构）
+  localPathLabel String
+  remotePrefix   String
+  includeSubdirs Boolean   @default(true)
+  // 同步过滤规则（扩展名/通配符等），Phase 2 定义具体结构
+  filters        Json?
+  createdAt      DateTime  @default(now())
+
+  @@index([deviceId])
+  @@index([spaceId])
+  @@map("folder_mappings")
+}
+
+// ===================== 文件与版本 =====================
+
+model SyncFile {
+  id                   String    @id @default(uuid()) @db.Uuid
+  spaceId              String    @db.Uuid
+  space                SyncSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  relativePath         String
+  fileName             String
+  // 对象存储（MinIO/S3）中的对象 key
+  objectId             String
+  size                 BigInt
+  sha256               String
+  version              Int       @default(1)
+  // 软删除标记：删除后保留行以支持回收站/同步删除传播
+  isDeleted            Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  lastModifiedByDeviceId String  @db.Uuid
+  lastModifiedBy       Device    @relation(fields: [lastModifiedByDeviceId], references: [id], onDelete: Restrict)
+
+  versions       FileVersion[]
+  conflicts      SyncConflict[]
+  trashItems     TrashItem[]
+  uploadSessions UploadSession[]
+
+  // Phase 4：活动文件路径唯一由 PostgreSQL 部分唯一索引保证
+  // （WHERE isDeleted = false），详见迁移 SQL。Prisma 不原生支持部分唯一索引，
+  // 因此这里声明普通索引；活动路径冲突由迁移的部分唯一索引在事务内拦截。
+  @@index([spaceId, relativePath])
+  @@index([spaceId, isDeleted])
+  @@map("sync_files")
+}
+
+model FileVersion {
+  id                String    @id @default(uuid()) @db.Uuid
+  fileId            String    @db.Uuid
+  file              SyncFile  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  version           Int
+  objectId          String
+  size              BigInt
+  sha256            String
+  createdAt         DateTime  @default(now())
+  createdByDeviceId String    @db.Uuid
+  createdBy         Device    @relation(fields: [createdByDeviceId], references: [id], onDelete: Restrict)
+
+  @@unique([fileId, version])
+  @@map("file_versions")
+}
+
+// ===================== 事件、游标与冲突 =====================
+
+model SyncEvent {
+  id        String        @id @default(uuid()) @db.Uuid
+  spaceId   String        @db.Uuid
+  space     SyncSpace     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  revision  BigInt
+  type      SyncEventType
+  payload   Json
+  deviceId  String        @db.Uuid
+  device    Device        @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  operationId String?
+  createdAt DateTime      @default(now())
+
+  // 同一空间内 revision 必须唯一（增量拉取的幂等保证）
+  @@unique([spaceId, revision])
+  @@unique([spaceId, deviceId, operationId])
+  @@index([spaceId, createdAt])
+  @@map("sync_events")
+}
+
+model SyncCursor {
+  id                 String    @id @default(uuid()) @db.Uuid
+  deviceId           String    @db.Uuid
+  device             Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  spaceId            String    @db.Uuid
+  space              SyncSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  lastAppliedRevision BigInt   @default(0)
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([deviceId, spaceId])
+  @@map("sync_cursors")
+}
+
+model SyncConflict {
+  id               String         @id @default(uuid()) @db.Uuid
+  spaceId          String         @db.Uuid
+  space            SyncSpace      @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  fileId           String         @db.Uuid
+  file             SyncFile       @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  serverVersion    Int
+  // 设备提交的冲突版本快照（大小/哈希/来源设备等），结构 Phase 2 定义
+  submittedVersion Json
+  status           ConflictStatus @default(pending)
+  resolvedAt       DateTime?
+  createdAt        DateTime       @default(now())
+
+  @@index([spaceId, fileId])
+  @@index([status])
+  @@map("sync_conflicts")
+}
+
+// ===================== 分片上传与回收站 =====================
+
+model UploadSession {
+  id               String              @id @default(uuid()) @db.Uuid
+  fileId           String?             @db.Uuid
+  file             SyncFile?           @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  deviceId         String              @db.Uuid
+  device           Device              @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  spaceId          String              @db.Uuid
+  space            SyncSpace           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  relativePath     String
+  sha256           String
+  idempotencyKey   String
+  providerUploadId String
+  objectId         String              @db.Uuid
+  totalSize        BigInt
+  partSize         BigInt
+  status           UploadSessionStatus @default(pending)
+  // 已上传分片清单：partNumber / etag / size / sha256
+  parts            Json?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@unique([deviceId, idempotencyKey])
+  @@index([deviceId])
+  @@index([spaceId])
+  @@index([fileId])
+  @@map("upload_sessions")
+}
+
+model TrashItem {
+  id                String    @id @default(uuid()) @db.Uuid
+  spaceId           String    @db.Uuid
+  space             SyncSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  fileId            String    @db.Uuid
+  file              SyncFile  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  relativePath      String
+  deletedByDeviceId String    @db.Uuid
+  deletedBy         Device    @relation(fields: [deletedByDeviceId], references: [id], onDelete: Restrict)
+  deletedAt         DateTime  @default(now())
+  // 回收站保留截止时间，到期后清理对象存储中的数据
+  purgeAfter        DateTime
+  objectId          String
+  // 恢复后记录恢复时间；null 表示仍在回收站
+  restoredAt        DateTime?
+
+  // 一个文件至多一条回收站记录：文件被软删除后不可再次删除，恢复后记录被清除
+  @@unique([fileId])
+  @@index([spaceId, purgeAfter])
+  @@map("trash_items")
+}
