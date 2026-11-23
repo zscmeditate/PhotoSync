@@ -3,12 +3,14 @@ package com.photosync.app.ui.onboarding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -58,70 +60,75 @@ fun OnboardingScreen(
         value = app.container.settingsRepository.serverBaseUrl.first()
     }
 
-    Column(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.height(24.dp))
-        Text(
-            text = "多设备文件同步",
-            fontSize = 26.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = "中心服务器模式 · 数据存放在你自己的服务器",
-            style = MaterialTheme.typography.bodyMedium,
-            color = OnSurfaceMuted
-        )
-
-        Spacer(Modifier.height(32.dp))
-        SyncDiagram()
-
-        Spacer(Modifier.height(32.dp))
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            BulletItem("文件通过你的服务器在多台手机间同步")
-            BulletItem("支持为每台设备选择多个本地目录")
-            BulletItem("设备离线期间的变更，上线后自动补齐")
-            BulletItem("冲突保留双方版本，删除先进回收站")
-        }
-
-        Spacer(Modifier.height(36.dp))
-        PrimaryButton(
-            text = "开始配置",
-            onClick = onStartConfig,
-            leadingIcon = Icons.Filled.Dns
-        )
-        Spacer(Modifier.height(12.dp))
-        TextButton(
-            onClick = {
-                // 已有账号也必须先有服务器地址
-                if (serverUrl.isBlank()) onStartConfig() else onHaveAccount()
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = maxHeight)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "我已有账号",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = PrimaryBlue
+                text = "多设备文件同步",
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
             )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "中心服务器模式 · 数据存放在你自己的服务器",
+                style = MaterialTheme.typography.bodyMedium,
+                color = OnSurfaceMuted
+            )
+
+            Spacer(Modifier.height(32.dp))
+            SyncDiagram()
+
+            Spacer(Modifier.height(32.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                BulletItem("文件通过你的服务器在多台手机间同步")
+                BulletItem("支持为每台设备选择多个本地目录")
+                BulletItem("设备离线期间的变更，上线后自动补齐")
+                BulletItem("冲突保留双方版本，删除先进回收站")
+            }
+
+            Spacer(Modifier.height(36.dp))
+            PrimaryButton(
+                text = "开始配置",
+                onClick = onStartConfig,
+                leadingIcon = Icons.Filled.Dns
+            )
+            Spacer(Modifier.height(12.dp))
+            TextButton(
+                onClick = {
+                    // 已有账号也必须先有服务器地址
+                    if (serverUrl.isBlank()) onStartConfig() else onHaveAccount()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Text(
+                    text = "我已有账号",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PrimaryBlue
+                )
+            }
         }
-        Spacer(Modifier.height(16.dp))
     }
 }
 

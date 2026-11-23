@@ -169,7 +169,7 @@ fun SpaceCard(
                             DropdownMenuItem(
                                 text = { Text("删除整个空间") },
                                 leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
-                                enabled = space.role == "owner",
+                                enabled = space.role == "admin",
                                 onClick = {
                                     menuExpanded = false
                                     onDelete()

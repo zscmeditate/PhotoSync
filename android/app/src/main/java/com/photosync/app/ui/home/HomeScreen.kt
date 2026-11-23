@@ -256,17 +256,18 @@ private fun HomeOverviewTab(
                 fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.height(4.dp))
-            Text(
-                text = if (spaces.isEmpty()) {
-                    "创建空间并添加本地目录后，这里会显示空间与映射摘要。"
-                } else if (mappings.isEmpty()) {
-                    "本机尚未绑定本地目录"
-                } else {
-                    "本机已参与 ${mappings.size} 个空间的同步"
-                },
-                color = OnSurfaceMuted,
-                style = MaterialTheme.typography.bodySmall
-            )
+            val summaryHint = when {
+                spaces.isEmpty() -> "创建空间并添加本地目录后，这里会显示空间与映射摘要。"
+                mappings.isEmpty() -> "本机尚未绑定本地目录"
+                else -> null
+            }
+            if (summaryHint != null) {
+                Text(
+                    text = summaryHint,
+                    color = OnSurfaceMuted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 text = "上传 / 下载任务可在「设置 → 任务中心」查看",

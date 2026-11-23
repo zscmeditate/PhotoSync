@@ -118,7 +118,11 @@ export const spaceSchema = {
     name: { type: 'string' },
     description: { anyOf: [{ type: 'string' }, { type: 'null' }] },
     revision: { type: 'string', description: '十进制事件序号' },
-    role: { type: 'string', enum: ['owner', 'admin', 'member', 'viewer'] },
+    role: {
+      type: 'string',
+      enum: ['owner', 'admin', 'member', 'viewer', 'none'],
+      description: 'none 表示该设备尚未加入该空间',
+    },
     memberCount: { type: 'integer' },
     mappingCount: { type: 'integer' },
     createdAt: { type: 'string', description: 'ISO8601' },

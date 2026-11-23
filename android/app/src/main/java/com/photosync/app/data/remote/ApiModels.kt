@@ -119,7 +119,9 @@ data class SpaceCreateRequest(
 @Serializable
 data class SpaceUpdateRequest(
     val name: String? = null,
-    val description: String? = null
+    val description: String? = null,
+    /** 操作者设备 ID：服务端据此校验是否为主设备 */
+    val deviceId: String? = null
 )
 
 @Serializable

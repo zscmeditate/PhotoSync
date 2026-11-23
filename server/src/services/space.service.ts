@@ -135,7 +135,8 @@ export interface SpaceServiceDeps {
 
 interface SpaceAccess {
   space: SpaceWithCountsRecord;
-  role: MemberRoleValue;
+  /** null 表示该设备属于当前账号但尚未加入这个空间（可用于「加入空间」列表） */
+  role: MemberRoleValue | null;
   deviceIds: string[];
 }
 
@@ -241,10 +242,8 @@ export class SpaceService {
       }
       seen.add(space.id);
       const role = await this.roleFor(space, userId, deviceIds, deviceId);
-      if (role === null) {
-        throw spaceForbidden();
-      }
-      result.push(this.toSpaceDto(space, role));
+      // 未加入该空间的设备仍应看到空间（用于「加入空间」列表），标记为 none
+      result.push(this.toSpaceDto(space, role ?? 'none'));
     }
     return result;
   }
@@ -258,7 +257,7 @@ export class SpaceService {
     const members = await this.deps.spaces.listMembers(spaceId);
     const now = this.now();
     return {
-      space: this.toSpaceDto(access.space, access.role),
+      space: this.toSpaceDto(access.space, access.role ?? 'none'),
       members: members.map((member) => this.toMemberDto(member, now)),
     };
   }
@@ -594,8 +593,12 @@ export class SpaceService {
       throw spaceNotFound();
     }
     const deviceIds = (await this.deps.devices.listByUser(userId)).map((device) => device.id);
+    if (specificDeviceId && !deviceIds.includes(specificDeviceId)) {
+      // 指定设备不属于当前账号：直接拒绝，避免越权读取
+      throw spaceForbidden();
+    }
     const role = await this.roleFor(space, userId, deviceIds, specificDeviceId);
-    if (role === null) {
+    if (role === null && !specificDeviceId) {
       throw spaceForbidden();
     }
     return { space, role, deviceIds };
@@ -618,7 +621,7 @@ export class SpaceService {
 
   private toSpaceDto(
     space: SyncSpaceRecord,
-    role: MemberRoleValue,
+    role: MemberRoleValue | 'none',
     memberCount?: number,
     mappingCount?: number,
   ): SpaceDto {

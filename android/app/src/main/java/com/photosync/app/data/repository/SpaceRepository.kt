@@ -62,7 +62,9 @@ class SpaceRepository(
     private val syncTaskDao = database.localSyncTaskDao()
     private val syncCursorDao = database.localSyncCursorDao()
 
+    /** 首页只展示本机已加入的空间；role=none 表示本机尚未加入，仅用于「加入空间」列表 */
     val spaces: Flow<List<LocalSpace>> = spaceDao.observeAll()
+        .map { list -> list.filter { it.role != "none" } }
 
     fun observeSpace(spaceId: String): Flow<LocalSpace?> = spaceDao.observeById(spaceId)
 
@@ -94,7 +96,7 @@ class SpaceRepository(
     }
 
     suspend fun refreshSpaces(): ApiResult<Unit> {
-        return when (val result = apiCall { apiClient.api.getSpaces() }) {
+        return when (val result = apiCall { apiClient.api.getSpaces(currentDeviceId()) }) {
             is ApiResult.Success -> {
                 val remoteSpaces = result.data.spaces
                 database.withTransaction {
@@ -134,7 +136,10 @@ class SpaceRepository(
     suspend fun updateSpace(spaceId: String, name: String, description: String?): ApiResult<Unit> {
         return when (
             val result = apiCall {
-                apiClient.api.updateSpace(spaceId, SpaceUpdateRequest(name, description))
+                apiClient.api.updateSpace(
+                    spaceId,
+                    SpaceUpdateRequest(name, description, currentDeviceId())
+                )
             }
         ) {
             is ApiResult.Success -> {
@@ -146,7 +151,9 @@ class SpaceRepository(
     }
 
     suspend fun deleteSpace(spaceId: String): ApiResult<Unit> {
-        return when (val result = apiCall { apiClient.api.deleteSpace(spaceId) }) {
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        return when (val result = apiCall { apiClient.api.deleteSpace(spaceId, deviceId) }) {
             is ApiResult.Success -> {
                 database.withTransaction {
                     mappingDao.getBySpace(spaceId).forEach { fileDao.clearByMapping(it.id) }
@@ -164,7 +171,7 @@ class SpaceRepository(
     suspend fun refreshSpace(spaceId: String): ApiResult<List<SpaceMemberDto>> {
         val deviceId = currentDeviceId()
             ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
-        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId) }) {
+        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId, deviceId) }) {
             is ApiResult.Success -> result.data
             is ApiResult.Failure -> return result
         }
@@ -203,7 +210,13 @@ class SpaceRepository(
     }
 
     suspend fun removeMember(spaceId: String, deviceId: String): ApiResult<Unit> {
-        return when (val result = apiCall { apiClient.api.removeSpaceMember(spaceId, deviceId) }) {
+        val operatorDeviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        return when (
+            val result = apiCall {
+                apiClient.api.removeSpaceMember(spaceId, deviceId, operatorDeviceId)
+            }
+        ) {
             is ApiResult.Success -> ApiResult.Success(Unit)
             is ApiResult.Failure -> result
         }
@@ -294,7 +307,7 @@ class SpaceRepository(
     }
 
     private suspend fun ensureCurrentDeviceIsMember(spaceId: String, deviceId: String): ApiResult<Unit> {
-        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId) }) {
+        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId, deviceId) }) {
             is ApiResult.Success -> result.data
             is ApiResult.Failure -> return result
         }
@@ -348,7 +361,7 @@ class SpaceRepository(
         }
         directoryInUseFailure(deviceId, treeUri, spaceId)?.let { return it }
 
-        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId) }) {
+        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId, deviceId) }) {
             is ApiResult.Success -> result.data
             is ApiResult.Failure -> return result
         }
@@ -385,7 +398,7 @@ class SpaceRepository(
         val pending = pendingBindingStore.get(spaceId) ?: return ApiResult.Success(null)
         val deviceId = currentDeviceId()
             ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
-        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId) }) {
+        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId, deviceId) }) {
             is ApiResult.Success -> result.data
             is ApiResult.Failure -> return result
         }

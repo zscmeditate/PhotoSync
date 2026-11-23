@@ -82,10 +82,13 @@ interface ApiService {
     suspend fun createSpace(@Body body: SpaceCreateRequest): Response<SpaceResponse>
 
     @GET("api/v1/spaces")
-    suspend fun getSpaces(): Response<SpacesResponse>
+    suspend fun getSpaces(@Query("deviceId") deviceId: String? = null): Response<SpacesResponse>
 
     @GET("api/v1/spaces/{spaceId}")
-    suspend fun getSpace(@Path("spaceId") spaceId: String): Response<SpaceDetailResponse>
+    suspend fun getSpace(
+        @Path("spaceId") spaceId: String,
+        @Query("deviceId") deviceId: String? = null
+    ): Response<SpaceDetailResponse>
 
     @PATCH("api/v1/spaces/{spaceId}")
     suspend fun updateSpace(
@@ -94,7 +97,10 @@ interface ApiService {
     ): Response<SpaceResponse>
 
     @DELETE("api/v1/spaces/{spaceId}")
-    suspend fun deleteSpace(@Path("spaceId") spaceId: String): Response<Unit>
+    suspend fun deleteSpace(
+        @Path("spaceId") spaceId: String,
+        @Query("deviceId") deviceId: String
+    ): Response<Unit>
 
     @POST("api/v1/spaces/{spaceId}/members")
     suspend fun addSpaceMember(
@@ -105,7 +111,8 @@ interface ApiService {
     @DELETE("api/v1/spaces/{spaceId}/members/{deviceId}")
     suspend fun removeSpaceMember(
         @Path("spaceId") spaceId: String,
-        @Path("deviceId") deviceId: String
+        @Path("deviceId") deviceId: String,
+        @Query("operatorDeviceId") operatorDeviceId: String
     ): Response<Unit>
 
     @POST("api/v1/spaces/{spaceId}/join-requests")

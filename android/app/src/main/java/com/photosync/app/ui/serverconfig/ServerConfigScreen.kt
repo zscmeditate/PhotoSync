@@ -119,8 +119,8 @@ fun ServerConfigScreen(
             AppTextField(
                 value = url,
                 onValueChange = {
-                    // 自动去掉末尾斜杠
-                    url = it.trimEnd('/')
+                    // 输入过程中不做裁剪，否则末尾的 "/" 会被立刻删除导致无法输入
+                    url = it
                 },
                 label = "服务器地址",
                 placeholder = "https://sync.example.com",
