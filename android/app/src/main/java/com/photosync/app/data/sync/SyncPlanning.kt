@@ -6,6 +6,9 @@ import java.util.Locale
 
 class SyncPlanningException(message: String) : IllegalArgumentException(message)
 
+/** 映射根目录下的本地恢复区（应用内部目录），扫描时必须忽略。 */
+internal const val LOCAL_TRASH_DIR_NAME = ".photosync-trash"
+
 data class SyncMappingRule(
     val id: String,
     val remotePrefix: String,
@@ -53,6 +56,10 @@ object RemoteDownloadPlanner {
             }
             if (localPath.isEmpty() || RemotePrefix.validate(localPath).error != null) {
                 throw SyncPlanningException("远端文件无法映射为安全的本地路径")
+            }
+            // 兼容历史版本误上传的本地恢复区内容：这类路径不参与同步。
+            if (localPath == LOCAL_TRASH_DIR_NAME || localPath.startsWith("$LOCAL_TRASH_DIR_NAME/")) {
+                return@mapNotNull null
             }
             if (!mapping.includeSubdirs && '/' in localPath) return@mapNotNull null
             if (mapping.onlyMedia && !MediaFileFilter.isMedia(null, localPath)) {

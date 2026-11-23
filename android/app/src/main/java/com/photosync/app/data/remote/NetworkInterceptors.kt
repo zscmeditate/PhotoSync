@@ -1,5 +1,6 @@
 package com.photosync.app.data.remote
 
+import android.util.Log
 import com.photosync.app.data.prefs.SecureTokenStore
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -55,7 +56,9 @@ class AuthInterceptor(
         }
 
         val response = chain.proceed(request)
-        if (response.code != 401 || accessToken.isNullOrBlank()) return response
+        if (response.code != 401) return response
+        // accessToken 丢失但 refreshToken 还在时也应尝试刷新，不能直接放弃。
+        if (accessToken.isNullOrBlank() && tokenStore.refreshToken.isNullOrBlank()) return response
         if (original.header(HEADER_RETRIED) != null) return response
         if (original.url.encodedPath.contains("/auth/login") ||
             original.url.encodedPath.contains("/auth/register")
@@ -82,23 +85,32 @@ class AuthInterceptor(
 
     /** 返回刷新后的 accessToken；失败时清空会话并返回 null。 */
     private fun performRefresh(): String? {
-        val refreshToken = tokenStore.refreshToken ?: return null
+        val refreshToken = tokenStore.refreshToken
+        if (refreshToken == null) {
+            Log.w(TAG, "无法刷新 Token：本地没有 refreshToken")
+            return null
+        }
         return try {
-            val response = authApi.refreshBlocking(RefreshRequest(refreshToken))
+            val response = kotlinx.coroutines.runBlocking {
+                authApi.refresh(RefreshRequest(refreshToken))
+            }
             val body = response.body()
             if (response.isSuccessful && body != null) {
                 tokenStore.saveTokens(body.accessToken, body.refreshToken)
                 body.accessToken
             } else {
+                Log.w(TAG, "刷新 Token 失败：HTTP ${response.code()}")
                 tokenStore.clear()
                 null
             }
         } catch (e: Exception) {
+            Log.w(TAG, "刷新 Token 请求异常", e)
             null
         }
     }
 
     private companion object {
         const val HEADER_RETRIED = "X-PhotoSync-Auth-Retry"
+        const val TAG = "PhotoSyncAuth"
     }
 }

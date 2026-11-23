@@ -450,7 +450,9 @@ class SyncEngine(
     ): SyncRunResult {
         val payload = event.payload ?: return SyncRunResult.FAILURE
         return when (event.type) {
-            "file_created", "file_updated" -> applyObjectEvent(spaceId, deviceId, mappings, event, payload)
+            // file_restored 与新建/修改一样需要把对象下载回本地。
+            "file_created", "file_updated", "file_restored" ->
+                applyObjectEvent(spaceId, deviceId, mappings, event, payload)
             "file_deleted" -> applyRemoteDelete(spaceId, deviceId, mappings, event, payload)
             "file_renamed" -> applyRemoteRename(spaceId, deviceId, mappings, event, payload)
             else -> SyncRunResult.FAILURE
@@ -529,23 +531,41 @@ class SyncEngine(
                     return failDownload(task, "LOCAL_PATH_CONFLICT", "目标路径不是可读文件", conflict)
                 }
                 val digest = fileStore.digest(target)
-                when (ExistingLocalPlanner.decide(
-                    targetExists = true,
-                    sameSize = digest.size == expectedSize,
-                    sameSha256 = digest.sha256.equals(expectedSha256, true)
-                )) {
-                    ExistingLocalDecision.INDEX_ONLY -> {
-                        repository.markSynced(
-                            task,
-                            localIndex(mapping.id, plan.localRelativePath, target, digest.size, digest.sha256, payload, oldIndex)
+                // 远端更新的是本设备上次已同步的同一文件、且本地仍保持上次同步内容时，
+                // 直接覆盖旧版本；否则每次远端修改都会被误判为本地冲突。
+                val replacingSyncedVersion = event.type == "file_updated" &&
+                    oldIndex != null &&
+                    oldIndex.remoteFileId == payload.fileId &&
+                    !oldIndex.sha256.isNullOrBlank() &&
+                    digest.sha256.equals(oldIndex.sha256, true)
+                if (replacingSyncedVersion) {
+                    val removed = fileStore.delete(mapping, plan.localRelativePath)
+                    if (!removed) {
+                        val conflict = localIndex(
+                            mapping.id, plan.localRelativePath, target,
+                            digest.size, digest.sha256, payload, oldIndex
                         )
-                        return SyncRunResult.SUCCESS
+                        return failDownload(task, "LOCAL_FILE_ERROR", "无法移除旧版本文件", conflict)
                     }
-                    ExistingLocalDecision.CONFLICT -> {
-                        val conflict = localIndex(mapping.id, plan.localRelativePath, target, digest.size, digest.sha256, payload, oldIndex)
-                        return failDownload(task, "LOCAL_PATH_CONFLICT", "本地已有不同内容，未覆盖远端或本地文件", conflict)
+                } else {
+                    when (ExistingLocalPlanner.decide(
+                        targetExists = true,
+                        sameSize = digest.size == expectedSize,
+                        sameSha256 = digest.sha256.equals(expectedSha256, true)
+                    )) {
+                        ExistingLocalDecision.INDEX_ONLY -> {
+                            repository.markSynced(
+                                task,
+                                localIndex(mapping.id, plan.localRelativePath, target, digest.size, digest.sha256, payload, oldIndex)
+                            )
+                            return SyncRunResult.SUCCESS
+                        }
+                        ExistingLocalDecision.CONFLICT -> {
+                            val conflict = localIndex(mapping.id, plan.localRelativePath, target, digest.size, digest.sha256, payload, oldIndex)
+                            return failDownload(task, "LOCAL_PATH_CONFLICT", "本地已有不同内容，未覆盖远端或本地文件", conflict)
+                        }
+                        ExistingLocalDecision.DOWNLOAD -> Unit
                     }
-                    ExistingLocalDecision.DOWNLOAD -> Unit
                 }
             }
 

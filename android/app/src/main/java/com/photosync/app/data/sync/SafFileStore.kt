@@ -129,7 +129,7 @@ class SafFileStore(private val context: Context) {
         if (!src.isFile) return@withContext false
         val root = resolveRoot(mapping)
         val trashRoot = try {
-            root.findFile(TRASH_DIR_NAME) ?: root.createDirectory(TRASH_DIR_NAME)
+            root.findFile(LOCAL_TRASH_DIR_NAME) ?: root.createDirectory(LOCAL_TRASH_DIR_NAME)
         } catch (e: SecurityException) {
             throw FolderAccessException("创建本地恢复区时授权失效")
         } catch (e: Exception) {
@@ -420,7 +420,6 @@ class SafFileStore(private val context: Context) {
 
     private companion object {
         const val BUFFER_SIZE = 64 * 1024
-        const val TRASH_DIR_NAME = ".photosync-trash"
     }
 }
 

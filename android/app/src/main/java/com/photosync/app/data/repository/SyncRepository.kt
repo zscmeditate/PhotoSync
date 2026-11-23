@@ -210,7 +210,8 @@ class SyncRepository(
                         coveredPaths.add(change.newRelativePath)
                         enqueueMutationTask(
                             spaceId, mapping, SyncTaskType.RENAME,
-                            localPath = change.newRelativePath, remotePath = change.newRelativePath,
+                            localPath = change.newRelativePath,
+                            remotePath = RemoteDownloadPlanner.remotePath(mapping.remotePrefix, change.newRelativePath),
                             fileId = change.fileId, baseVersion = change.baseVersion,
                             oldLocalRelativePath = change.oldRelativePath, now
                         )

@@ -36,10 +36,6 @@ interface ApiService {
     @POST("api/v1/auth/refresh")
     suspend fun refresh(@Body body: RefreshRequest): Response<TokenResponse>
 
-    /** 仅供 OkHttp 拦截器在 401 时同步刷新 Token 使用 */
-    @POST("api/v1/auth/refresh")
-    fun refreshBlocking(@Body body: RefreshRequest): Response<TokenResponse>
-
     @POST("api/v1/auth/logout")
     suspend fun logout(@Body body: LogoutRequest): Response<Unit>
 

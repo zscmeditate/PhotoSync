@@ -60,6 +60,8 @@ class FolderScanner(private val context: Context) {
                     ?: throw FolderScanException("目录中存在无法识别名称的项目")
                 if (MediaFileFilter.isTemporarySyncFile(name)) continue
                 if (document.isDirectory) {
+                    // 本地恢复区是应用内部目录，不能被当成同步内容上传。
+                    if (name == LOCAL_TRASH_DIR_NAME) continue
                     if (mapping.includeSubdirs) {
                         val path = if (parentPath.isEmpty()) name else "$parentPath/$name"
                         visit(document, path)
