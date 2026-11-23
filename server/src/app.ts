@@ -133,6 +133,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(swaggerUi, {
     routePrefix: '/docs',
     staticCSP: true,
+    // 默认 CSP 含 upgrade-insecure-requests，会把 http 访问 /docs 的所有请求强制升级为 https；
+    // 后端仅提供 HTTP，外网通过 http://IP:3000/docs 访问时会因此报错，这里移除该指令。
+    transformStaticCSP: (header) => header.replace(/;?\s*upgrade-insecure-requests;?/i, ''),
   });
 
   // 统一错误封装：{"error":{"code":"STRING","message":"string"}}

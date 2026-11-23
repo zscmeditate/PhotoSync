@@ -23,6 +23,9 @@ local.properties
 captures/
 .externalNativeBuild/
 
+# 本地运行环境（便携版 PostgreSQL / MinIO / 数据与日志）
+.local/
+
 # IDE / OS
 .idea/
 .vscode/
