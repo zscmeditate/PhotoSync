@@ -63,6 +63,7 @@ class LocalChangeDetectorTest {
         assertEquals("a.jpg", upload.relativePath)
     }
 
+
     @Test
     fun removedSyncedFile_producesDelete() {
         val old = listOf(index("a.jpg", remoteFileId = "f1", remoteVersion = 3))

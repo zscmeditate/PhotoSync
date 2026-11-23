@@ -215,6 +215,39 @@ describe('POST /api/v1/auth/refresh + logout', () => {
     expect(errorOf(after.json()).code).toBe('INVALID_REFRESH_TOKEN');
   });
 
+  it('removes the logged-out device from the device list', async () => {
+    const user = await registerUser('logout-device@example.com', 'Logout Device');
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/register',
+      headers: authHeader(user.accessToken),
+      payload: { deviceName: 'Logout Phone' },
+    });
+    const deviceId = (created.json() as { device: { id: string } }).device.id;
+
+    const before = await app.inject({
+      method: 'GET',
+      url: '/api/v1/devices',
+      headers: authHeader(user.accessToken),
+    });
+    expect((before.json() as { devices: unknown[] }).devices).toHaveLength(1);
+
+    const loggedOut = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/logout',
+      headers: { ...authHeader(user.accessToken), 'x-device-id': deviceId },
+      payload: { refreshToken: user.refreshToken },
+    });
+    expect(loggedOut.statusCode).toBe(204);
+
+    const after = await app.inject({
+      method: 'GET',
+      url: '/api/v1/devices',
+      headers: authHeader(user.accessToken),
+    });
+    expect((after.json() as { devices: unknown[] }).devices).toHaveLength(0);
+  });
+
   it('rejects logout without a bearer token', async () => {
     const res = await app.inject({
       method: 'POST',
@@ -249,10 +282,19 @@ describe('devices API', () => {
       deviceName: 'Pixel 8',
       platform: 'android',
       credentialStatus: 'active',
+      isPrimary: false,
     });
     expect(device.id).toBeTypeOf('string');
     expect(device.createdAt).toBeTypeOf('string');
     expect(device.lastSeenAt).toBeTypeOf('string');
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/register',
+      headers: authHeader(user.accessToken),
+      payload: { deviceName: 'Pixel 9' },
+    });
+    const secondDevice = (second.json() as { device: Record<string, any> }).device;
 
     const list = await app.inject({
       method: 'GET',
@@ -260,29 +302,75 @@ describe('devices API', () => {
       headers: authHeader(user.accessToken),
     });
     expect(list.statusCode).toBe(200);
-    expect((list.json() as { devices: unknown[] }).devices).toHaveLength(1);
+    expect((list.json() as { devices: unknown[] }).devices).toHaveLength(2);
 
     const renamed = await app.inject({
       method: 'PATCH',
       url: `/api/v1/devices/${device.id}`,
-      headers: authHeader(user.accessToken),
+      headers: { ...authHeader(user.accessToken), 'x-device-id': device.id },
       payload: { deviceName: 'Pixel 8 Pro' },
     });
     expect(renamed.statusCode).toBe(200);
     expect((renamed.json() as { device: Record<string, any> }).device.deviceName).toBe('Pixel 8 Pro');
 
-    const removed = await app.inject({
+    // 重命名只能改本机：用 B 的身份改 A 的设备会被拒
+    const renameOther = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/devices/${device.id}`,
+      headers: { ...authHeader(user.accessToken), 'x-device-id': secondDevice.id },
+      payload: { deviceName: 'Hacked' },
+    });
+    expect(renameOther.statusCode).toBe(403);
+    expect(errorOf(renameOther.json()).code).toBe('DEVICE_NOT_SELF');
+
+    // 没有主设备时，任意设备可以抢占主设备身份
+    const claimed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/primary',
+      headers: { ...authHeader(user.accessToken), 'x-device-id': device.id },
+    });
+    expect(claimed.statusCode).toBe(200);
+    expect((claimed.json() as { device: Record<string, any> }).device.isPrimary).toBe(true);
+
+    // 已有主设备后，其它设备不能再抢占
+    const conflict = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/primary',
+      headers: { ...authHeader(user.accessToken), 'x-device-id': secondDevice.id },
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(errorOf(conflict.json()).code).toBe('PRIMARY_DEVICE_TAKEN');
+
+    // 从设备不能移除别人，也不能移除主设备
+    const denied = await app.inject({
       method: 'DELETE',
       url: `/api/v1/devices/${device.id}`,
-      headers: authHeader(user.accessToken),
+      headers: { ...authHeader(user.accessToken), 'x-device-id': secondDevice.id },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(errorOf(denied.json()).code).toBe('DEVICE_NOT_PRIMARY');
+
+    // 主设备不能通过移除接口移除自己
+    const selfRemove = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/devices/${device.id}`,
+      headers: { ...authHeader(user.accessToken), 'x-device-id': device.id },
+    });
+    expect(selfRemove.statusCode).toBe(400);
+
+    // 主设备移除从设备
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/devices/${secondDevice.id}`,
+      headers: { ...authHeader(user.accessToken), 'x-device-id': device.id },
     });
     expect(removed.statusCode).toBe(204);
 
     // 删除是幂等的：再次吊销已吊销设备仍返回 204（便于客户端重试）
     const again = await app.inject({
       method: 'DELETE',
-      url: `/api/v1/devices/${device.id}`,
-      headers: authHeader(user.accessToken),
+      url: `/api/v1/devices/${secondDevice.id}`,
+      headers: { ...authHeader(user.accessToken), 'x-device-id': device.id },
     });
     expect(again.statusCode).toBe(204);
 
@@ -292,7 +380,107 @@ describe('devices API', () => {
       headers: authHeader(user.accessToken),
     });
     const listed = (list2.json() as { devices: Array<Record<string, any>> }).devices;
-    expect(listed[0].credentialStatus).toBe('revoked');
+    const primary = listed.find((item) => item.id === device.id);
+    const revoked = listed.find((item) => item.id === secondDevice.id);
+    expect(primary?.isPrimary).toBe(true);
+    expect(revoked?.credentialStatus).toBe('revoked');
+
+    // 主设备放弃身份后，其它设备可以再次抢占
+    const released = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/devices/primary',
+      headers: { ...authHeader(user.accessToken), 'x-device-id': device.id },
+    });
+    expect(released.statusCode).toBe(204);
+    const releasedAgain = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/devices/primary',
+      headers: { ...authHeader(user.accessToken), 'x-device-id': device.id },
+    });
+    expect(releasedAgain.statusCode).toBe(403);
+    expect(errorOf(releasedAgain.json()).code).toBe('DEVICE_NOT_PRIMARY');
+  });
+
+  it('lets a removed device request rejoin and the primary device approve it', async () => {
+    const user = await registerUser('rejoin@example.com', 'Rejoin');
+
+    const primaryRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/register',
+      headers: authHeader(user.accessToken),
+      payload: { deviceName: 'Primary' },
+    });
+    const primary = (primaryRes.json() as { device: Record<string, any> }).device;
+
+    const secondaryRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/register',
+      headers: authHeader(user.accessToken),
+      payload: { deviceName: 'Removed Phone' },
+    });
+    const secondary = (secondaryRes.json() as { device: Record<string, any> }).device;
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/primary',
+      headers: { ...authHeader(user.accessToken), 'x-device-id': primary.id },
+    });
+    await app.inject({
+      method: 'DELETE',
+      url: `/api/v1/devices/${secondary.id}`,
+      headers: { ...authHeader(user.accessToken), 'x-device-id': primary.id },
+    });
+
+    // 被移除设备重新登记不会自动恢复，仍为 revoked
+    const reRegistered = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/register',
+      headers: authHeader(user.accessToken),
+      payload: { deviceName: 'Removed Phone', deviceId: secondary.id },
+    });
+    expect(reRegistered.statusCode).toBe(201);
+    expect((reRegistered.json() as { device: Record<string, any> }).device.credentialStatus).toBe(
+      'revoked',
+    );
+
+    // 被移除设备发起重新加入申请
+    const requested = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/rejoin',
+      headers: { ...authHeader(user.accessToken), 'x-device-id': secondary.id },
+    });
+    expect(requested.statusCode).toBe(200);
+    expect((requested.json() as { device: Record<string, any> }).device.isRejoinRequested).toBe(
+      true,
+    );
+
+    // 从设备无权同意
+    const denied = await app.inject({
+      method: 'POST',
+      url: `/api/v1/devices/${secondary.id}/rejoin/approve`,
+      headers: { ...authHeader(user.accessToken), 'x-device-id': secondary.id },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(errorOf(denied.json()).code).toBe('DEVICE_NOT_PRIMARY');
+
+    // 主设备同意后恢复 active
+    const approved = await app.inject({
+      method: 'POST',
+      url: `/api/v1/devices/${secondary.id}/rejoin/approve`,
+      headers: { ...authHeader(user.accessToken), 'x-device-id': primary.id },
+    });
+    expect(approved.statusCode).toBe(200);
+    const approvedDevice = (approved.json() as { device: Record<string, any> }).device;
+    expect(approvedDevice.credentialStatus).toBe('active');
+    expect(approvedDevice.isRejoinRequested).toBe(false);
+
+    // 没有待处理申请时再次同意返回 400
+    const again = await app.inject({
+      method: 'POST',
+      url: `/api/v1/devices/${secondary.id}/rejoin/approve`,
+      headers: { ...authHeader(user.accessToken), 'x-device-id': primary.id },
+    });
+    expect(again.statusCode).toBe(400);
   });
 
   it('returns 404 DEVICE_NOT_FOUND for another user device', async () => {
@@ -307,10 +495,18 @@ describe('devices API', () => {
     });
     const deviceId = (created.json() as { device: { id: string } }).device.id;
 
+    const bobDevice = await app.inject({
+      method: 'POST',
+      url: '/api/v1/devices/register',
+      headers: authHeader(bob.accessToken),
+      payload: { deviceName: 'Bob Phone' },
+    });
+    const bobDeviceId = (bobDevice.json() as { device: { id: string } }).device.id;
+
     const patched = await app.inject({
       method: 'PATCH',
       url: `/api/v1/devices/${deviceId}`,
-      headers: authHeader(bob.accessToken),
+      headers: { ...authHeader(bob.accessToken), 'x-device-id': bobDeviceId },
       payload: { deviceName: 'Hacked' },
     });
     expect(patched.statusCode).toBe(404);
@@ -319,7 +515,7 @@ describe('devices API', () => {
     const deleted = await app.inject({
       method: 'DELETE',
       url: `/api/v1/devices/${deviceId}`,
-      headers: authHeader(bob.accessToken),
+      headers: { ...authHeader(bob.accessToken), 'x-device-id': bobDeviceId },
     });
     expect(deleted.statusCode).toBe(404);
     expect(errorOf(deleted.json()).code).toBe('DEVICE_NOT_FOUND');

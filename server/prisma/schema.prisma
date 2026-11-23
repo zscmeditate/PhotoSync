@@ -72,6 +72,8 @@ model User {
   passwordHash String
   displayName  String
   status       UserStatus @default(active)
+  // 当前主设备（同一账号最多一台）；为空表示还没有设备抢占主设备身份
+  primaryDeviceId String?  @db.Uuid
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -90,6 +92,10 @@ model Device {
   platform         DevicePlatform   @default(android)
   credentialStatus CredentialStatus @default(active)
   lastSeenAt       DateTime?
+  /// 被移除设备发起重新加入申请的时间；null 表示没有待处理申请
+  rejoinRequestedAt DateTime?
+  /// 设备主动退出登录的时间；非空表示已退出登录，不再出现在设备列表
+  loggedOutAt      DateTime?
   createdAt        DateTime         @default(now())
 
   refreshTokens     RefreshToken[]
@@ -101,6 +107,7 @@ model Device {
   createdVersions   FileVersion[]
   emittedEvents     SyncEvent[]
   deletedTrashItems TrashItem[]
+  joinRequests      SpaceJoinRequest[]
 
   @@index([userId])
   @@map("devices")
@@ -145,6 +152,7 @@ model SyncSpace {
   uploadSessions UploadSession[]
   conflicts      SyncConflict[]
   trashItems     TrashItem[]
+  joinRequests   SpaceJoinRequest[]
 
   @@index([ownerId])
   @@map("sync_spaces")
@@ -164,6 +172,23 @@ model SpaceMember {
   @@map("space_members")
 }
 
+// 设备申请加入空间的待审批记录：由空间所有者的主设备同意或拒绝。
+model SpaceJoinRequest {
+  id         String    @id @default(uuid()) @db.Uuid
+  spaceId    String    @db.Uuid
+  space      SyncSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  deviceId   String    @db.Uuid
+  device     Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  // pending / approved / rejected
+  status     String    @default("pending")
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([spaceId, status])
+  @@index([deviceId])
+  @@map("space_join_requests")
+}
+
 model FolderMapping {
   id             String    @id @default(uuid()) @db.Uuid
   deviceId       String    @db.Uuid
@@ -172,14 +197,13 @@ model FolderMapping {
   space          SyncSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   // 设备端展示用的本地路径标签（不存绝对路径，避免泄露设备目录结构）
   localPathLabel String
-  remotePrefix   String
-  includeSubdirs Boolean   @default(true)
-  // 同步过滤规则（扩展名/通配符等），Phase 2 定义具体结构
+  // 同步过滤规则（扩展名/通配符等）
   filters        Json?
   createdAt      DateTime  @default(now())
 
+  // 一个空间在一台设备上只允许绑定一个本地目录，远端树即该目录结构。
+  @@unique([spaceId, deviceId])
   @@index([deviceId])
-  @@index([spaceId])
   @@map("folder_mappings")
 }
 

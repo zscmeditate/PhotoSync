@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -46,14 +47,14 @@ import com.photosync.app.ui.theme.PrimaryBlue
 fun ActivityScreen(onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val viewModel: SyncTasksViewModel = viewModel {
-        SyncTasksViewModel(app.container.syncRepository) { SyncScheduler.enqueue(app) }
+        SyncTasksViewModel(app.container.syncRepository) { SyncScheduler.enqueue(app, force = true) }
     }
     val tasks by viewModel.recent.collectAsStateWithLifecycle()
     val grouped = remember(tasks) {
         tasks.groupBy { TaskPresentation.formatDate(it.updatedAt) }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         SpacePageHeader(title = "活动记录", onBack = onBack)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),

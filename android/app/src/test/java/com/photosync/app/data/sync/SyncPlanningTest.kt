@@ -10,53 +10,39 @@ import org.junit.Test
 class SyncPlanningTest {
 
     @Test
-    fun remotePath_supportsRootAndNestedMappings() {
-        assertEquals("photo.jpg", RemoteDownloadPlanner.remotePath("", "photo.jpg"))
+    fun remotePath_matchesLocalStructure() {
+        assertEquals("photo.jpg", RemoteDownloadPlanner.remotePath("photo.jpg"))
         assertEquals(
             "Camera/2026/photo.jpg",
-            RemoteDownloadPlanner.remotePath("Camera", "2026/photo.jpg")
+            RemoteDownloadPlanner.remotePath("  \\Camera//2026/photo.jpg ")
         )
 
-        val root = SyncMappingRule("root", "", includeSubdirs = true, onlyMedia = false)
-        val nested = SyncMappingRule("camera", "Camera", includeSubdirs = true, onlyMedia = false)
+        val root = SyncMappingRule("root", onlyMedia = false)
         assertEquals(
             DownloadPathPlan("root", "2026/photo.jpg", "2026/photo.jpg"),
             RemoteDownloadPlanner.plan("2026/photo.jpg", listOf(root))
         )
+    }
+
+    @Test
+    fun plan_respectsMediaRuleAndSkipsTrashPaths() {
+        val media = SyncMappingRule("root", onlyMedia = true)
         assertEquals(
-            DownloadPathPlan("camera", "2026/photo.jpg", "Camera/2026/photo.jpg"),
-            RemoteDownloadPlanner.plan("Camera/2026/photo.jpg", listOf(root, nested))
+            DownloadPathPlan("root", "2026/a.heic", "2026/a.heic"),
+            RemoteDownloadPlanner.plan("2026/a.heic", listOf(media))
         )
-    }
-
-    @Test
-    fun plan_ignoresUnrelatedMappingsAndUsesLongestPrefix() {
-        val mappings = listOf(
-            SyncMappingRule("root", "", true, false),
-            SyncMappingRule("camera", "Camera", true, false),
-            SyncMappingRule("year", "Camera/2026", true, false)
+        assertEquals(
+            DownloadPathPlan("root", "2026/a.mp4", "2026/a.mp4"),
+            RemoteDownloadPlanner.plan("2026/a.mp4", listOf(media))
         )
-        assertEquals("year", RemoteDownloadPlanner.plan("Camera/2026/a.jpg", mappings)?.mappingId)
-        assertNull(RemoteDownloadPlanner.plan("Other/a.jpg", mappings.drop(1)))
-        assertNull(RemoteDownloadPlanner.plan("Camera2/a.jpg", listOf(mappings[1])))
-    }
-
-    @Test
-    fun plan_excludesRemotePathEqualToDirectoryPrefix() {
-        val mapping = SyncMappingRule("camera", "Camera", includeSubdirs = true, onlyMedia = false)
-        assertNull(RemoteDownloadPlanner.plan("Camera", listOf(mapping)))
-    }
-
-    @Test
-    fun plan_respectsSubdirectoryAndMediaRules() {
-        val flat = SyncMappingRule("flat", "Camera", includeSubdirs = false, onlyMedia = false)
-        assertEquals("a.jpg", RemoteDownloadPlanner.plan("Camera/a.jpg", listOf(flat))?.localRelativePath)
-        assertNull(RemoteDownloadPlanner.plan("Camera/2026/a.jpg", listOf(flat)))
-
-        val media = flat.copy(includeSubdirs = true, onlyMedia = true)
-        assertEquals("2026/a.heic", RemoteDownloadPlanner.plan("Camera/2026/a.heic", listOf(media))?.localRelativePath)
-        assertEquals("2026/a.mp4", RemoteDownloadPlanner.plan("Camera/2026/a.mp4", listOf(media))?.localRelativePath)
-        assertNull(RemoteDownloadPlanner.plan("Camera/2026/notes.txt", listOf(media)))
+        assertNull(RemoteDownloadPlanner.plan("2026/notes.txt", listOf(media)))
+        assertNull(
+            RemoteDownloadPlanner.plan(
+                "$LOCAL_TRASH_DIR_NAME/old.jpg",
+                listOf(SyncMappingRule("root", onlyMedia = false))
+            )
+        )
+        assertNull(RemoteDownloadPlanner.plan("photo.jpg", emptyList()))
     }
 
     @Test
@@ -125,7 +111,7 @@ class SyncPlanningTest {
     @Test
     fun pathsAndHashes_rejectUnsafeValues() {
         try {
-            RemoteDownloadPlanner.remotePath("Camera", "../private.jpg")
+            RemoteDownloadPlanner.remotePath("../private.jpg")
             fail("应拒绝目录穿越")
         } catch (_: SyncPlanningException) {
             // expected

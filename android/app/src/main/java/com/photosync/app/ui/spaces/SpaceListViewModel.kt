@@ -6,6 +6,7 @@ import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.local.LocalSpace
 import com.photosync.app.data.local.MappingStatus
 import com.photosync.app.data.remote.ApiResult
+import com.photosync.app.data.repository.DeviceRepository
 import com.photosync.app.data.repository.SpaceRepository
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,10 +19,15 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class SpaceListViewModel(
-    private val spaceRepository: SpaceRepository
+    private val spaceRepository: SpaceRepository,
+    deviceRepository: DeviceRepository
 ) : ViewModel() {
     val spaces: StateFlow<List<LocalSpace>> = spaceRepository.spaces
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 只有主设备可以创建空间；从设备只能加入或退出已有空间 */
+    val canCreateSpace: StateFlow<Boolean> = deviceRepository.isThisDevicePrimary
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     val mappings: StateFlow<List<LocalFolderMapping>> = spaceRepository.observeMappingsForCurrentDevice()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())

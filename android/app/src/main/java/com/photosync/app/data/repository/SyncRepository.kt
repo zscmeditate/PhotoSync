@@ -15,6 +15,7 @@ import com.photosync.app.data.local.SyncTaskType
 import com.photosync.app.data.prefs.SecureTokenStore
 import com.photosync.app.data.remote.ApiClient
 import com.photosync.app.data.remote.ApiResult
+import com.photosync.app.data.remote.RemoteFileDto
 import com.photosync.app.data.sync.FolderScanProgress
 import com.photosync.app.data.sync.LocalChange
 import com.photosync.app.data.sync.LocalChangeDetector
@@ -211,7 +212,7 @@ class SyncRepository(
                         enqueueMutationTask(
                             spaceId, mapping, SyncTaskType.RENAME,
                             localPath = change.newRelativePath,
-                            remotePath = RemoteDownloadPlanner.remotePath(mapping.remotePrefix, change.newRelativePath),
+                            remotePath = RemoteDownloadPlanner.remotePath(change.newRelativePath),
                             fileId = change.fileId, baseVersion = change.baseVersion,
                             oldLocalRelativePath = change.oldRelativePath, now
                         )
@@ -222,7 +223,7 @@ class SyncRepository(
             for (file in newIndex) {
                 if (file.status != FileSyncStatus.PENDING_UPLOAD) continue
                 if (file.relativePath in coveredPaths) continue
-                val remotePath = RemoteDownloadPlanner.remotePath(mapping.remotePrefix, file.relativePath)
+                val remotePath = RemoteDownloadPlanner.remotePath(file.relativePath)
                 if (taskDao.countActiveTasks(spaceId, mapping.id, remotePath) > 0) continue
                 enqueueUploadTask(
                     spaceId, mapping, file.relativePath, file.size, file.sha256,
@@ -242,7 +243,7 @@ class SyncRepository(
         fileId: String?,
         now: Long
     ) {
-        val remotePath = RemoteDownloadPlanner.remotePath(mapping.remotePrefix, localPath)
+        val remotePath = RemoteDownloadPlanner.remotePath(localPath)
         if (taskDao.countActiveTasks(spaceId, mapping.id, remotePath) > 0) return
         val task = LocalSyncTask(
             id = UUID.randomUUID().toString(),
@@ -292,6 +293,35 @@ class SyncRepository(
             updatedAt = now
         ).let { it.copy(operationId = it.id) }
         taskDao.insertIfAbsent(task)
+    }
+
+    /**
+     * 新绑定/重新绑定的映射：把本地已存在且内容一致的远端文件直接建立关联，
+     * 避免重新扫描后把已有文件误判为新上传而触发 FILE_ALREADY_EXISTS。
+     */
+    suspend fun reconcileRemoteLinks(mappingId: String, remoteFiles: List<RemoteFileDto>) {
+        if (remoteFiles.isEmpty()) return
+        database.withTransaction {
+            val localFiles = fileDao.getByMapping(mappingId)
+            if (localFiles.isEmpty()) return@withTransaction
+            val remoteByPath = remoteFiles.associateBy { it.relativePath }
+            for (local in localFiles) {
+                if (!local.remoteFileId.isNullOrBlank()) continue
+                val remote = remoteByPath[local.relativePath] ?: continue
+                val localSha = local.sha256
+                val remoteSha = remote.sha256
+                if (localSha.isNullOrBlank() || remoteSha.isNullOrBlank()) continue
+                if (local.size != remote.size) continue
+                if (!localSha.equals(remoteSha, ignoreCase = true)) continue
+                fileDao.upsert(
+                    local.copy(
+                        status = FileSyncStatus.SYNCED,
+                        remoteFileId = remote.fileId,
+                        remoteVersion = remote.version
+                    )
+                )
+            }
+        }
     }
 
     private suspend fun markIndexPendingUpload(mappingId: String, relativePath: String) {

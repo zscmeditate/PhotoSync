@@ -89,13 +89,16 @@ afterEach(async () => {
 });
 
 async function addDevice(userId: string, deviceName: string): Promise<DeviceRecord> {
-  return devices.create({
+  const device = await devices.create({
     userId,
     deviceName,
     platform: 'android',
     credentialStatus: 'active',
     lastSeenAt: new Date(),
   });
+  // 账号下第一台设备作为主设备（创建空间需要主设备身份）
+  await devices.claimPrimaryDevice(userId, device.id);
+  return device;
 }
 
 function sha256(content: Buffer): string {

@@ -56,6 +56,26 @@ interface ApiService {
     @DELETE("api/v1/devices/{deviceId}")
     suspend fun deleteDevice(@Path("deviceId") deviceId: String): Response<Unit>
 
+    /** 将本机（X-Device-Id）设为主设备；已有主设备时返回 409 */
+    @POST("api/v1/devices/primary")
+    suspend fun claimPrimaryDevice(): Response<DeviceResponse>
+
+    /** 本机放弃主设备身份 */
+    @DELETE("api/v1/devices/primary")
+    suspend fun releasePrimaryDevice(): Response<Unit>
+
+    /** 被移除的本机申请重新加入（等待主设备同意） */
+    @POST("api/v1/devices/rejoin")
+    suspend fun requestRejoinDevice(): Response<DeviceResponse>
+
+    /** 主设备同意被移除设备重新加入 */
+    @POST("api/v1/devices/{deviceId}/rejoin/approve")
+    suspend fun approveDeviceRejoin(@Path("deviceId") deviceId: String): Response<DeviceResponse>
+
+    /** 主设备拒绝被移除设备的重新加入申请 */
+    @POST("api/v1/devices/{deviceId}/rejoin/reject")
+    suspend fun rejectDeviceRejoin(@Path("deviceId") deviceId: String): Response<Unit>
+
     // ---------- spaces ----------
 
     @POST("api/v1/spaces")
@@ -87,6 +107,30 @@ interface ApiService {
         @Path("spaceId") spaceId: String,
         @Path("deviceId") deviceId: String
     ): Response<Unit>
+
+    @POST("api/v1/spaces/{spaceId}/join-requests")
+    suspend fun requestJoinSpace(
+        @Path("spaceId") spaceId: String,
+        @Body body: MemberAddRequest
+    ): Response<JoinRequestSubmitResponse>
+
+    @GET("api/v1/spaces/{spaceId}/join-requests")
+    suspend fun getJoinRequests(
+        @Path("spaceId") spaceId: String,
+        @Query("deviceId") deviceId: String
+    ): Response<JoinRequestListResponse>
+
+    @POST("api/v1/join-requests/{requestId}/approve")
+    suspend fun approveJoinRequest(
+        @Path("requestId") requestId: String,
+        @Body body: MemberAddRequest
+    ): Response<JoinRequestResponse>
+
+    @POST("api/v1/join-requests/{requestId}/reject")
+    suspend fun rejectJoinRequest(
+        @Path("requestId") requestId: String,
+        @Body body: MemberAddRequest
+    ): Response<JoinRequestResponse>
 
     // ---------- folder mappings ----------
 

@@ -9,6 +9,8 @@ sealed class Screen(val route: String) {
     data object Home : Screen("home")
     data object SpaceCreate : Screen("space_edit")
 
+    data object JoinSpace : Screen("join_space")
+
     data class SpaceEdit(val spaceId: String) : Screen("space_edit/$spaceId") {
         companion object { const val ROUTE = "space_edit/{spaceId}" }
     }
@@ -17,8 +19,12 @@ sealed class Screen(val route: String) {
         companion object { const val ROUTE = "space_detail/{spaceId}" }
     }
 
-    data class AddMapping(val spaceId: String) : Screen("add_mapping/$spaceId") {
-        companion object { const val ROUTE = "add_mapping/{spaceId}" }
+    /** [firstBinding] 为 true 表示建空间/加入空间后的首次目录绑定，完成后进入空间详情。 */
+    data class AddMapping(
+        val spaceId: String,
+        val firstBinding: Boolean = false
+    ) : Screen("add_mapping/$spaceId?first=$firstBinding") {
+        companion object { const val ROUTE = "add_mapping/{spaceId}?first={first}" }
     }
 
     data class MappingFiles(val mappingId: String) : Screen("mapping_files/$mappingId") {

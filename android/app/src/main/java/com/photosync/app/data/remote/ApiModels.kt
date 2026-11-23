@@ -69,12 +69,20 @@ data class DeviceDto(
     val deviceName: String,
     val platform: String,
     val credentialStatus: String,
+    /** 是否为当前账号的主设备（同一账号最多一台） */
+    val isPrimary: Boolean = false,
+    /** 被移除设备是否正在等待主设备同意重新加入 */
+    val isRejoinRequested: Boolean = false,
     val createdAt: String? = null,
     val lastSeenAt: String? = null
 )
 
 @Serializable
-data class DeviceRegisterRequest(val deviceName: String)
+data class DeviceRegisterRequest(
+    val deviceName: String,
+    /** 本机已登记过的设备 ID：传入则服务端原地复用，不会新增设备 */
+    val deviceId: String? = null
+)
 
 @Serializable
 data class DeviceRenameRequest(val deviceName: String)
@@ -143,6 +151,30 @@ data class MemberAddRequest(val deviceId: String)
 @Serializable
 data class MemberResponse(val member: SpaceMemberDto)
 
+@Serializable
+data class JoinRequestDto(
+    val id: String,
+    val spaceId: String,
+    val deviceId: String,
+    val deviceName: String,
+    val platform: String,
+    val status: String,
+    val requestedAt: String? = null,
+    val resolvedAt: String? = null
+)
+
+@Serializable
+data class JoinRequestSubmitResponse(
+    val request: JoinRequestDto,
+    val joined: Boolean
+)
+
+@Serializable
+data class JoinRequestListResponse(val requests: List<JoinRequestDto> = emptyList())
+
+@Serializable
+data class JoinRequestResponse(val request: JoinRequestDto)
+
 // ---------- folder mappings ----------
 
 @Serializable
@@ -151,8 +183,6 @@ data class MappingDto(
     val spaceId: String,
     val deviceId: String,
     val localPathLabel: String,
-    val remotePrefix: String,
-    val includeSubdirs: Boolean,
     val onlyMedia: Boolean,
     val createdAt: String? = null
 )
@@ -161,17 +191,12 @@ data class MappingDto(
 data class MappingCreateRequest(
     val deviceId: String,
     val localPathLabel: String,
-    val remotePrefix: String,
-    val includeSubdirs: Boolean,
     val onlyMedia: Boolean
 )
 
 @Serializable
 data class MappingUpdateRequest(
-    val localPathLabel: String? = null,
-    val remotePrefix: String? = null,
-    val includeSubdirs: Boolean? = null,
-    val onlyMedia: Boolean? = null
+    val localPathLabel: String? = null
 )
 
 @Serializable

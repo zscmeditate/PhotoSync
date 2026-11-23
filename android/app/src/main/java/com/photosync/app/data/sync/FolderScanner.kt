@@ -62,10 +62,8 @@ class FolderScanner(private val context: Context) {
                 if (document.isDirectory) {
                     // 本地恢复区是应用内部目录，不能被当成同步内容上传。
                     if (name == LOCAL_TRASH_DIR_NAME) continue
-                    if (mapping.includeSubdirs) {
-                        val path = if (parentPath.isEmpty()) name else "$parentPath/$name"
-                        visit(document, path)
-                    }
+                    val path = if (parentPath.isEmpty()) name else "$parentPath/$name"
+                    visit(document, path)
                     continue
                 }
                 if (!document.exists() || !document.canRead()) {

@@ -19,6 +19,9 @@ data class LocalDevice(
     val deviceName: String,
     val platform: String,
     val credentialStatus: String,
+    val isPrimary: Boolean = false,
+    /** 被移除设备是否正在等待主设备同意重新加入 */
+    val isRejoinRequested: Boolean = false,
     val isThisDevice: Boolean,
     val online: Boolean,
     val createdAt: String?,
@@ -36,9 +39,6 @@ interface LocalDeviceDao {
 
     @Query("DELETE FROM local_devices")
     suspend fun clear()
-
-    @Query("DELETE FROM local_devices WHERE id = :id")
-    suspend fun deleteById(id: String)
 }
 
 @Entity(tableName = "local_spaces")
@@ -92,7 +92,7 @@ object MappingStatus {
 
 @Entity(
     tableName = "local_folder_mappings",
-    indices = [Index(value = ["spaceId", "deviceId"])]
+    indices = [Index(value = ["spaceId", "deviceId"], unique = true)]
 )
 data class LocalFolderMapping(
     @PrimaryKey val id: String,
@@ -100,8 +100,6 @@ data class LocalFolderMapping(
     val deviceId: String,
     val localPathLabel: String,
     val treeUri: String,
-    val remotePrefix: String,
-    val includeSubdirs: Boolean,
     val onlyMedia: Boolean,
     val status: String,
     val lastScanComplete: Boolean,
@@ -236,7 +234,7 @@ interface LocalFileIndexDao {
         LocalSyncTask::class,
         LocalSyncCursor::class
     ],
-    version = 4,
+    version = 7,
     exportSchema = false
 )
 abstract class SyncDatabase : RoomDatabase() {

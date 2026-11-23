@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -48,7 +49,7 @@ fun SpaceEditScreen(
         viewModel.saved.collect { onSaved(it.spaceId, it.created) }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         SpacePageHeader(title = if (spaceId == null) "创建同步空间" else "编辑同步空间", onBack = onBack)
         if (state.loading) {
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
@@ -107,14 +108,24 @@ fun SpaceEditScreen(
                     Spacer(Modifier.height(16.dp))
                 }
                 PrimaryButton(
-                    text = if (state.saving) "正在保存…" else if (spaceId == null) "创建空间" else "保存修改",
+                    text = if (state.saving) {
+                        "正在保存…"
+                    } else if (spaceId == null) {
+                        "创建并选择本地目录"
+                    } else {
+                        "保存修改"
+                    },
                     onClick = viewModel::save,
                     enabled = !state.saving,
                     leadingIcon = if (spaceId == null) Icons.Filled.Add else Icons.Filled.Check
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    text = if (spaceId == null) "创建后将进入空间详情，可立即添加同步目录。" else "空间名称与说明会保存到服务器。",
+                    text = if (spaceId == null) {
+                        "创建后需要立即选择一个本机目录，作为该空间在本机的同步目录。"
+                    } else {
+                        "空间名称与说明会保存到服务器。"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = OnSurfaceMuted
                 )

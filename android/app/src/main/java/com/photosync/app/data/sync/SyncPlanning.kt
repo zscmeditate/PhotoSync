@@ -11,8 +11,6 @@ internal const val LOCAL_TRASH_DIR_NAME = ".photosync-trash"
 
 data class SyncMappingRule(
     val id: String,
-    val remotePrefix: String,
-    val includeSubdirs: Boolean,
     val onlyMedia: Boolean
 )
 
@@ -40,47 +38,30 @@ object MediaFileFilter {
 }
 
 object RemoteDownloadPlanner {
+    /** 远端树与本地目录同构，映射根即空间根。 */
     fun plan(remotePath: String, mappings: List<SyncMappingRule>): DownloadPathPlan? {
-        val validation = RemotePrefix.validate(remotePath)
+        val validation = RemotePath.validate(remotePath)
         if (!validation.isValid || validation.normalized.isEmpty()) {
             throw SyncPlanningException(validation.error ?: "远端文件路径不能为空")
         }
         val normalized = validation.normalized
-        return mappings.mapNotNull { mapping ->
-            val prefix = RemotePrefix.normalize(mapping.remotePrefix)
-            val localPath = when {
-                prefix.isEmpty() -> normalized
-                normalized == prefix -> return@mapNotNull null
-                normalized.startsWith("$prefix/") -> normalized.removePrefix("$prefix/")
-                else -> return@mapNotNull null
-            }
-            if (localPath.isEmpty() || RemotePrefix.validate(localPath).error != null) {
-                throw SyncPlanningException("远端文件无法映射为安全的本地路径")
-            }
-            // 兼容历史版本误上传的本地恢复区内容：这类路径不参与同步。
-            if (localPath == LOCAL_TRASH_DIR_NAME || localPath.startsWith("$LOCAL_TRASH_DIR_NAME/")) {
-                return@mapNotNull null
-            }
-            if (!mapping.includeSubdirs && '/' in localPath) return@mapNotNull null
-            if (mapping.onlyMedia && !MediaFileFilter.isMedia(null, localPath)) {
-                return@mapNotNull null
-            }
-            DownloadPathPlan(mapping.id, localPath, normalized)
-        }.maxByOrNull { plan ->
-            mappings.first { it.id == plan.mappingId }.remotePrefix.length
+        // 兼容历史版本误上传的本地恢复区内容：这类路径不参与同步。
+        if (normalized == LOCAL_TRASH_DIR_NAME || normalized.startsWith("$LOCAL_TRASH_DIR_NAME/")) {
+            return null
+        }
+        return mappings.firstOrNull { mapping ->
+            !mapping.onlyMedia || MediaFileFilter.isMedia(null, normalized)
+        }?.let { mapping ->
+            DownloadPathPlan(mapping.id, normalized, normalized)
         }
     }
 
-    fun remotePath(remotePrefix: String, localRelativePath: String): String {
-        val local = RemotePrefix.validate(localRelativePath)
+    fun remotePath(localRelativePath: String): String {
+        val local = RemotePath.validate(localRelativePath)
         if (!local.isValid || local.normalized.isEmpty()) {
             throw SyncPlanningException(local.error ?: "本地相对路径不能为空")
         }
-        val prefix = RemotePrefix.validate(remotePrefix)
-        if (!prefix.isValid) throw SyncPlanningException(prefix.error ?: "远端前缀无效")
-        return listOf(prefix.normalized, local.normalized)
-            .filter { it.isNotEmpty() }
-            .joinToString("/")
+        return local.normalized
     }
 }
 

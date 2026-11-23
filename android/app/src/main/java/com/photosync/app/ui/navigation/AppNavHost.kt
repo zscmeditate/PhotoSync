@@ -2,9 +2,11 @@ package com.photosync.app.ui.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.photosync.app.ui.activity.ActivityScreen
 import com.photosync.app.ui.auth.LoginScreen
 import com.photosync.app.ui.auth.RegisterScreen
@@ -13,6 +15,7 @@ import com.photosync.app.ui.home.HomeScreen
 import com.photosync.app.ui.onboarding.OnboardingScreen
 import com.photosync.app.ui.serverconfig.ServerConfigScreen
 import com.photosync.app.ui.spaces.AddMappingScreen
+import com.photosync.app.ui.spaces.JoinSpaceScreen
 import com.photosync.app.ui.spaces.MappingFilesScreen
 import com.photosync.app.ui.spaces.SpaceDetailScreen
 import com.photosync.app.ui.spaces.SpaceEditScreen
@@ -79,11 +82,28 @@ fun AppRoot(navController: NavHostController = rememberNavController()) {
             SpaceEditScreen(
                 spaceId = null,
                 onBack = { navController.popBackStack() },
-                onSaved = { spaceId, _ ->
-                    navController.navigate(Screen.SpaceDetail(spaceId).route) {
-                        popUpTo(Screen.Home.route) { inclusive = false }
-                        launchSingleTop = true
+                onSaved = { spaceId, created ->
+                    if (created) {
+                        // 创建空间后立即绑定本地目录，避免出现没有本地目录的空空间。
+                        navController.navigate(Screen.AddMapping(spaceId, firstBinding = true).route) {
+                            popUpTo(Screen.Home.route) { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    } else {
+                        navController.navigate(Screen.SpaceDetail(spaceId).route) {
+                            popUpTo(Screen.Home.route) { inclusive = false }
+                            launchSingleTop = true
+                        }
                     }
+                }
+            )
+        }
+
+        composable(Screen.JoinSpace.route) {
+            JoinSpaceScreen(
+                onBack = { navController.popBackStack() },
+                onSelectSpace = { spaceId ->
+                    navController.navigate(Screen.AddMapping(spaceId, firstBinding = true).route)
                 }
             )
         }
@@ -110,10 +130,28 @@ fun AppRoot(navController: NavHostController = rememberNavController()) {
             )
         }
 
-        composable(Screen.AddMapping.ROUTE) { entry ->
+        composable(
+            Screen.AddMapping.ROUTE,
+            arguments = listOf(navArgument("first") {
+                type = NavType.BoolType
+                defaultValue = false
+            })
+        ) { entry ->
+            val spaceId = requireNotNull(entry.arguments?.getString("spaceId"))
+            val firstBinding = entry.arguments?.getBoolean("first") ?: false
             AddMappingScreen(
-                spaceId = requireNotNull(entry.arguments?.getString("spaceId")),
-                onBack = { navController.popBackStack() }
+                spaceId = spaceId,
+                onBack = { navController.popBackStack() },
+                onFinished = {
+                    if (firstBinding) {
+                        navController.navigate(Screen.SpaceDetail(spaceId).route) {
+                            popUpTo(Screen.Home.route) { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    } else {
+                        navController.popBackStack()
+                    }
+                }
             )
         }
 

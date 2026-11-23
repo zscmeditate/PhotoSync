@@ -56,12 +56,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const authService = new AuthService({
     users: deps.users,
     refreshTokens: deps.refreshTokens,
+    devices: deps.devices,
+    spaces: deps.spaces,
     jwt,
     refreshTtlMs: deps.config.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   });
   const deviceService = new DeviceService({
     devices: deps.devices,
     refreshTokens: deps.refreshTokens,
+    spaces: deps.spaces,
   });
   const spaceService = new SpaceService({ spaces: deps.spaces, devices: deps.devices });
   const transferService = new TransferService({
@@ -82,6 +85,25 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const hub = new RealtimeHub();
 
   await app.register(fastifyWebsocket);
+
+  // 在线心跳：任何带 X-Device-Id 的已认证请求都会顺带刷新设备在线时间，
+  // 使设备页的「在线/离线」反映真实活跃状态（service 内做 60s 节流）。
+  app.addHook('onRequest', async (request) => {
+    const deviceId = request.headers['x-device-id'];
+    const header = request.headers.authorization;
+    if (typeof deviceId !== 'string' || deviceId.length === 0) {
+      return;
+    }
+    if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
+      return;
+    }
+    try {
+      const { userId } = jwt.verifyAccessToken(header.slice('Bearer '.length).trim());
+      await deviceService.touch(userId, deviceId);
+    } catch {
+      // 认证失败由各路由的 requireAuth 统一返回 401
+    }
+  });
 
   app.addContentTypeParser(
     'application/octet-stream',

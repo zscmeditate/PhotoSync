@@ -14,7 +14,7 @@ import {
   uploadNotFound,
   validationError,
 } from '../lib/errors';
-import type { ObjectContent, ObjectStore } from '../lib/object-store';
+import { StorageObjectMissingError, type ObjectContent, type ObjectStore } from '../lib/object-store';
 import type {
   CommittedFileRecord,
   ConflictRecord,
@@ -432,7 +432,16 @@ export class SyncService {
       throw objectNotFound();
     }
     await this.requireSpaceDevice(userId, metadata.spaceId, deviceId);
-    const content = await this.deps.objectStore.getObject(objectId);
+    let content: ObjectContent;
+    try {
+      content = await this.deps.objectStore.getObject(objectId);
+    } catch (error) {
+      // 元数据在但对象已被清理/丢失：返回可识别的 404，让客户端按永久失败处理而不是整轮同步失败。
+      if (error instanceof StorageObjectMissingError) {
+        throw objectNotFound();
+      }
+      throw error;
+    }
     return { metadata, content };
   }
 

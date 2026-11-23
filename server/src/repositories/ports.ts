@@ -25,6 +25,10 @@ export interface DeviceRecord {
   platform: DevicePlatformValue;
   credentialStatus: CredentialStatusValue;
   lastSeenAt: Date | null;
+  /** 被移除设备发起重新加入申请的时间；null 表示没有待处理申请 */
+  rejoinRequestedAt: Date | null;
+  /** 主动退出登录时间；非空表示已退出登录，不出现在设备列表 */
+  loggedOutAt: Date | null;
   createdAt: Date;
 }
 
@@ -60,8 +64,21 @@ export interface DeviceRepository {
   }): Promise<DeviceRecord>;
   update(
     id: string,
-    data: { deviceName?: string; credentialStatus?: CredentialStatusValue; lastSeenAt?: Date },
+    data: {
+      deviceName?: string;
+      credentialStatus?: CredentialStatusValue;
+      lastSeenAt?: Date;
+      rejoinRequestedAt?: Date | null;
+      loggedOutAt?: Date | null;
+    },
   ): Promise<DeviceRecord>;
+
+  /** 当前账号的主设备 ID；没有主设备时返回 null */
+  findPrimaryDeviceId(userId: string): Promise<string | null>;
+  /** 抢占主设备；已有其它主设备时返回 false（幂等：自己已是主设备返回 true） */
+  claimPrimaryDevice(userId: string, deviceId: string): Promise<boolean>;
+  /** 放弃主设备身份；仅当该设备当前是主设备时返回 true */
+  clearPrimaryDevice(userId: string, deviceId: string): Promise<boolean>;
 }
 
 export interface RefreshTokenRepository {
@@ -106,13 +123,26 @@ export interface SpaceMemberWithDeviceRecord extends SpaceMemberRecord {
   device: DeviceRecord;
 }
 
+export type JoinRequestStatusValue = 'pending' | 'approved' | 'rejected';
+
+export interface SpaceJoinRequestRecord {
+  id: string;
+  spaceId: string;
+  deviceId: string;
+  status: JoinRequestStatusValue;
+  createdAt: Date;
+  resolvedAt: Date | null;
+}
+
+export interface SpaceJoinRequestWithDeviceRecord extends SpaceJoinRequestRecord {
+  device: DeviceRecord;
+}
+
 export interface FolderMappingRecord {
   id: string;
   spaceId: string;
   deviceId: string;
   localPathLabel: string;
-  remotePrefix: string;
-  includeSubdirs: boolean;
   filters: unknown;
   createdAt: Date;
 }
@@ -134,15 +164,11 @@ export interface MappingCreateData {
   spaceId: string;
   deviceId: string;
   localPathLabel: string;
-  remotePrefix: string;
-  includeSubdirs: boolean;
   filters: { onlyMedia: boolean };
 }
 
 export interface MappingUpdateData {
   localPathLabel?: string;
-  remotePrefix?: string;
-  includeSubdirs?: boolean;
   filters?: { onlyMedia: boolean };
 }
 
@@ -165,6 +191,26 @@ export interface SpaceRepository {
   /** 幂等加入空间，并确保对应 SyncCursor 存在。 */
   addMember(spaceId: string, deviceId: string): Promise<SpaceMemberWithDeviceRecord>;
   removeMember(spaceId: string, deviceId: string): Promise<void>;
+  /** 登出/移除时清除设备的全部空间绑定：成员关系、目录映射、同步游标。 */
+  clearDeviceBindings(deviceId: string): Promise<void>;
+
+  // ===== 加入空间申请 =====
+  findPendingJoinRequest(
+    spaceId: string,
+    deviceId: string,
+  ): Promise<SpaceJoinRequestWithDeviceRecord | null>;
+  createJoinRequest(data: {
+    spaceId: string;
+    deviceId: string;
+    status?: JoinRequestStatusValue;
+    resolvedAt?: Date | null;
+  }): Promise<SpaceJoinRequestWithDeviceRecord>;
+  listPendingJoinRequests(spaceId: string): Promise<SpaceJoinRequestWithDeviceRecord[]>;
+  findJoinRequestById(requestId: string): Promise<SpaceJoinRequestWithDeviceRecord | null>;
+  updateJoinRequest(
+    requestId: string,
+    data: { status: JoinRequestStatusValue; resolvedAt: Date | null },
+  ): Promise<SpaceJoinRequestWithDeviceRecord>;
 
   listMappings(spaceId: string, deviceId?: string): Promise<FolderMappingRecord[]>;
   findMappingById(mappingId: string): Promise<FolderMappingRecord | null>;

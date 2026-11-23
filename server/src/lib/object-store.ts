@@ -19,6 +19,14 @@ export interface ObjectContent {
   contentLength?: number;
 }
 
+/** 元数据仍存在但对象存储中的内容已丢失（如存储被清理或损坏）。 */
+export class StorageObjectMissingError extends Error {
+  constructor(objectId: string) {
+    super(`Storage object ${objectId} not found`);
+    this.name = 'StorageObjectMissingError';
+  }
+}
+
 export interface ObjectStore {
   ensureBucket(): Promise<void>;
   createMultipartUpload(objectId: string): Promise<string>;
@@ -154,17 +162,24 @@ export class S3ObjectStore implements ObjectStore {
   }
 
   async getObject(objectId: string): Promise<ObjectContent> {
-    const result = await this.client.send(
-      new GetObjectCommand({ Bucket: this.bucket, Key: objectKey(objectId) }),
-    );
-    if (!result.Body) {
-      throw new Error(`S3 object ${objectId} has no response body`);
+    try {
+      const result = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: objectKey(objectId) }),
+      );
+      if (!result.Body) {
+        throw new Error(`S3 object ${objectId} has no response body`);
+      }
+      const body =
+        result.Body instanceof Readable
+          ? result.Body
+          : Readable.from(result.Body as AsyncIterable<Uint8Array>);
+      return { body, contentLength: result.ContentLength };
+    } catch (error) {
+      if (isStorageError(error, ['NoSuchKey', 'NotFound'], 404)) {
+        throw new StorageObjectMissingError(objectId);
+      }
+      throw error;
     }
-    const body =
-      result.Body instanceof Readable
-        ? result.Body
-        : Readable.from(result.Body as AsyncIterable<Uint8Array>);
-    return { body, contentLength: result.ContentLength };
   }
 
   async deleteObject(objectId: string): Promise<void> {

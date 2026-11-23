@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -63,7 +64,7 @@ private enum class TaskFilter(val label: String) {
 fun TaskCenterScreen(onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val viewModel: SyncTasksViewModel = viewModel {
-        SyncTasksViewModel(app.container.syncRepository) { SyncScheduler.enqueue(app) }
+        SyncTasksViewModel(app.container.syncRepository) { SyncScheduler.enqueue(app, force = true) }
     }
     val tasks by viewModel.active.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -81,7 +82,7 @@ fun TaskCenterScreen(onBack: () -> Unit) {
         TaskFilter.FAILED -> tasks.filter { it.state == SyncTaskState.FAILED }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
             SpacePageHeader(
                 title = "任务中心",

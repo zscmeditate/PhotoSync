@@ -5,7 +5,14 @@ import {
   invalidRefreshToken,
 } from '../lib/errors';
 import type { JwtService } from '../lib/jwt';
-import type { RefreshTokenRecord, RefreshTokenRepository, UserRecord, UserRepository } from '../repositories/ports';
+import type {
+  DeviceRepository,
+  RefreshTokenRecord,
+  RefreshTokenRepository,
+  SpaceRepository,
+  UserRecord,
+  UserRepository,
+} from '../repositories/ports';
 
 export interface UserDto {
   id: string;
@@ -27,6 +34,10 @@ export interface TokenPairDto {
 export interface AuthServiceDeps {
   users: UserRepository;
   refreshTokens: RefreshTokenRepository;
+  /** 登出时把本机设备从设备列表移除 */
+  devices: DeviceRepository;
+  /** 登出时清除该设备的空间成员关系与目录映射（绑定关系不保留） */
+  spaces?: SpaceRepository;
   jwt: JwtService;
   /** 刷新令牌有效期（毫秒） */
   refreshTtlMs: number;
@@ -98,14 +109,35 @@ export class AuthService {
     return this.issueTokens(user, record.deviceId);
   }
 
-  /** 登出：吊销该 refresh token（幂等，对未知 token 也返回成功） */
-  async logout(userId: string, refreshToken: string): Promise<void> {
+  /**
+   * 登出：吊销该 refresh token（幂等，对未知 token 也返回成功）。
+   * 携带本机设备 ID 时，把该设备标记为已退出登录并从设备列表隐藏；
+   * 若它正是主设备，同时释放主设备身份，方便其它设备抢占；
+   * 并清除该设备的空间成员关系与目录映射——重新登录后需手动加入空间。
+   */
+  async logout(userId: string, refreshToken: string, deviceId?: string): Promise<void> {
+    const now = this.now();
     const record: RefreshTokenRecord | null = await this.deps.refreshTokens.findByHash(
       sha256Hex(refreshToken),
     );
     if (record && record.userId === userId && record.revokedAt === null) {
-      await this.deps.refreshTokens.revoke(record.id, this.now());
+      await this.deps.refreshTokens.revoke(record.id, now);
     }
+    if (!deviceId) {
+      return;
+    }
+    const device = await this.deps.devices.findById(deviceId);
+    if (!device || device.userId !== userId) {
+      return;
+    }
+    await this.deps.devices.update(device.id, {
+      loggedOutAt: now,
+      rejoinRequestedAt: null,
+    });
+    await this.deps.refreshTokens.revokeByDevice(device.id, now);
+    await this.deps.devices.clearPrimaryDevice(userId, device.id);
+    // 清除空间绑定：重新登录后不再自动拥有这些空间，需手动加入
+    await this.deps.spaces?.clearDeviceBindings(device.id);
   }
 
   private async issueTokens(user: UserRecord, deviceId: string | null): Promise<TokenPairDto> {

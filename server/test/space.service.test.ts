@@ -3,8 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { AppError } from '../src/lib/errors';
 import type { DeviceRecord, MemberRoleValue } from '../src/repositories/ports';
 import {
-  normalizeRemotePrefix,
-  remotePrefixesOverlap,
+  normalizeRemotePath,
   SpaceService,
 } from '../src/services/space.service';
 import { FakeDeviceRepository, FakeSpaceRepository } from './fakes';
@@ -25,13 +24,16 @@ async function addDevice(
   userId: string,
   credentialStatus: DeviceRecord['credentialStatus'] = 'active',
 ): Promise<DeviceRecord> {
-  return devices.create({
+  const device = await devices.create({
     userId,
     deviceName: `${userId} device`,
     platform: 'android',
     credentialStatus,
     lastSeenAt: NOW,
   });
+  // 账号下第一台设备作为主设备（创建空间需要主设备身份）
+  await devices.claimPrimaryDevice(userId, device.id);
+  return device;
 }
 
 function seedMembership(
@@ -131,6 +133,21 @@ describe('SpaceService 空间创建、列表与详情', () => {
       400,
       'INVALID_DEVICE',
     );
+  });
+
+  it('只有主设备可以创建空间', async () => {
+    const { service, devices } = makeService();
+    const primary = await addDevice(devices, 'user-1');
+    const secondary = await addDevice(devices, 'user-1');
+
+    await expectAppError(
+      () => service.createSpace('user-1', { name: 'X', deviceId: secondary.id }),
+      403,
+      'DEVICE_NOT_PRIMARY',
+    );
+
+    const space = await service.createSpace('user-1', { name: 'Y', deviceId: primary.id });
+    expect(space.ownerId).toBe('user-1');
   });
 
   it('列表合并拥有与设备加入的空间，并取多设备最高角色', async () => {
@@ -234,6 +251,11 @@ describe('SpaceService 成员管理', () => {
     const other = await addDevice(devices, 'user-2');
     seedMembership(spaces, space.id, ownSecond.id, 'member');
     seedMembership(spaces, space.id, other.id, 'member');
+    await service.createMapping(userId, space.id, {
+      deviceId: ownSecond.id,
+      localPathLabel: 'DCIM',
+      onlyMedia: false,
+    });
     spaces.spaces.get(space.id)!.ownerId = 'user-2';
     spaces.members.get(`${space.id}:${device.id}`)!.role = 'member';
 
@@ -244,6 +266,7 @@ describe('SpaceService 成员管理', () => {
     );
     await service.removeSpaceMember(userId, space.id, ownSecond.id);
     expect(await spaces.findMember(space.id, ownSecond.id)).toBeNull();
+    expect(await spaces.listMappings(space.id, ownSecond.id)).toHaveLength(0);
 
     await service.removeSpaceMember('user-2', space.id, device.id);
     expect(await spaces.findMember(space.id, device.id)).toBeNull();
@@ -255,25 +278,125 @@ describe('SpaceService 成员管理', () => {
   });
 });
 
-describe('SpaceService 映射规范化与重叠', () => {
-  it('规范化反斜杠和多余斜杠，存储并返回规范化值及 onlyMedia', async () => {
+describe('SpaceService 加入空间申请', () => {
+  async function setupWithSecondary() {
+    const context = await setupSpace();
+    const secondary = await context.devices.create({
+      userId: context.userId,
+      deviceName: 'Tablet',
+      platform: 'android',
+      credentialStatus: 'active',
+      lastSeenAt: NOW,
+    });
+    return { ...context, secondary };
+  }
+
+  it('从设备申请后进入待审批，主设备同意后成为成员', async () => {
+    const { service, spaces, device, secondary, space, userId } = await setupWithSecondary();
+
+    const applied = await service.requestToJoinSpace(userId, space.id, secondary.id);
+    expect(applied.joined).toBe(false);
+    expect(applied.request).toMatchObject({
+      spaceId: space.id,
+      deviceId: secondary.id,
+      deviceName: 'Tablet',
+      status: 'pending',
+    });
+
+    // 重复申请幂等返回同一条记录
+    const repeated = await service.requestToJoinSpace(userId, space.id, secondary.id);
+    expect(repeated.request.id).toBe(applied.request.id);
+
+    // 从设备不能查看待审批列表
+    await expectAppError(
+      () => service.listJoinRequests(userId, space.id, secondary.id),
+      403,
+      'DEVICE_NOT_PRIMARY',
+    );
+
+    const pending = await service.listJoinRequests(userId, space.id, device.id);
+    expect(pending).toHaveLength(1);
+
+    const approved = await service.resolveJoinRequest(userId, pending[0].id, device.id, true);
+    expect(approved.status).toBe('approved');
+    expect(approved.resolvedAt).toBe(NOW.toISOString());
+    const members = await spaces.listMembers(space.id);
+    expect(members.map((member) => member.deviceId)).toContain(secondary.id);
+    expect(await service.listJoinRequests(userId, space.id, device.id)).toHaveLength(0);
+
+    // 已处理的申请不能再次审批
+    await expectAppError(
+      () => service.resolveJoinRequest(userId, pending[0].id, device.id, true),
+      409,
+      'JOIN_REQUEST_RESOLVED',
+    );
+  });
+
+  it('拒绝申请不会加入成员，且从设备无法代替主设备审批', async () => {
+    const { service, spaces, device, secondary, space, userId } = await setupWithSecondary();
+    const applied = await service.requestToJoinSpace(userId, space.id, secondary.id);
+
+    await expectAppError(
+      () => service.resolveJoinRequest(userId, applied.request.id, secondary.id, true),
+      403,
+      'DEVICE_NOT_PRIMARY',
+    );
+
+    const rejected = await service.resolveJoinRequest(userId, applied.request.id, device.id, false);
+    expect(rejected.status).toBe('rejected');
+    const members = await spaces.listMembers(space.id);
+    expect(members.map((member) => member.deviceId)).not.toContain(secondary.id);
+  });
+
+  it('主设备自己申请时直接成为成员，已是成员再申请返回 409', async () => {
+    const { service, space, device, userId } = await setupSpace();
+    await service.removeSpaceMember(userId, space.id, device.id);
+
+    const joined = await service.requestToJoinSpace(userId, space.id, device.id);
+    expect(joined.joined).toBe(true);
+    expect(joined.request.status).toBe('approved');
+
+    await expectAppError(
+      () => service.requestToJoinSpace(userId, space.id, device.id),
+      409,
+      'ALREADY_MEMBER',
+    );
+  });
+
+  it('非空间所有者不能为空间提交申请', async () => {
+    const { service, devices, space } = await setupWithSecondary();
+    const outsider = await devices.create({
+      userId: 'user-2',
+      deviceName: 'Other Phone',
+      platform: 'android',
+      credentialStatus: 'active',
+      lastSeenAt: NOW,
+    });
+    await devices.claimPrimaryDevice('user-2', outsider.id);
+
+    await expectAppError(
+      () => service.requestToJoinSpace('user-2', space.id, outsider.id),
+      403,
+      'SPACE_FORBIDDEN',
+    );
+  });
+});
+
+describe('SpaceService 目录映射（一空间一设备一个目录）', () => {
+  it('创建映射时保存本地目录标签与 onlyMedia', async () => {
     const { service, spaces, device, space, userId } = await setupSpace();
     const mapping = await service.createMapping(userId, space.id, {
       deviceId: device.id,
       localPathLabel: '  DCIM  ',
-      remotePrefix: '  \\Camera\\2024//Holiday/ ',
-      includeSubdirs: false,
       onlyMedia: true,
     });
 
     expect(mapping).toMatchObject({
       localPathLabel: 'DCIM',
-      remotePrefix: 'Camera/2024/Holiday',
-      includeSubdirs: false,
       onlyMedia: true,
     });
     expect(spaces.mappings.get(mapping.id)?.filters).toEqual({ onlyMedia: true });
-    expect(normalizeRemotePrefix(' \\// ')).toBe('');
+    expect(normalizeRemotePath(' \\// ')).toBe('');
   });
 
   it('拒绝 ..、控制字符、超长段和超长总路径', async () => {
@@ -283,9 +406,9 @@ describe('SpaceService 映射规范化与重叠', () => {
       'x'.repeat(129),
       `${'a/'.repeat(300)}b`,
     ]) {
-      expect(() => normalizeRemotePrefix(value)).toThrowError(AppError);
+      expect(() => normalizeRemotePath(value)).toThrowError(AppError);
       try {
-        normalizeRemotePrefix(value);
+        normalizeRemotePath(value);
       } catch (error) {
         expect((error as AppError).code).toBe('VALIDATION_ERROR');
       }
@@ -300,8 +423,6 @@ describe('SpaceService 映射规范化与重叠', () => {
         service.createMapping(userId, space.id, {
           deviceId: second.id,
           localPathLabel: 'DCIM',
-          remotePrefix: 'Camera',
-          includeSubdirs: true,
           onlyMedia: false,
         }),
       409,
@@ -309,81 +430,58 @@ describe('SpaceService 映射规范化与重叠', () => {
     );
   });
 
-  it('检测父子前缀与根前缀重叠，同设备内大小写敏感', async () => {
+  it('同一设备同一空间只能绑定一个目录，其他设备可各自绑定', async () => {
     const { service, devices, space, device, userId } = await setupSpace();
-    const input = {
+    await service.createMapping(userId, space.id, {
       deviceId: device.id,
       localPathLabel: 'DCIM',
-      includeSubdirs: true,
       onlyMedia: false,
-    };
-    await service.createMapping(userId, space.id, { ...input, remotePrefix: 'Camera' });
-    await expectAppError(
-      () => service.createMapping(userId, space.id, { ...input, remotePrefix: 'Camera/2024' }),
-      409,
-      'MAPPING_OVERLAP',
-    );
-    await expect(
-      service.createMapping(userId, space.id, { ...input, remotePrefix: 'camera' }),
-    ).resolves.toMatchObject({ remotePrefix: 'camera' });
-
-    const second = await addDevice(devices, userId);
-    await service.addSpaceMember(userId, space.id, second.id);
-    await service.createMapping(userId, space.id, {
-      ...input,
-      deviceId: second.id,
-      remotePrefix: '',
     });
-    expect(remotePrefixesOverlap('', 'Anything')).toBe(true);
     await expectAppError(
       () =>
         service.createMapping(userId, space.id, {
-          ...input,
-          deviceId: second.id,
-          remotePrefix: 'Anything',
+          deviceId: device.id,
+          localPathLabel: 'Documents',
+          onlyMedia: false,
         }),
       409,
-      'MAPPING_OVERLAP',
+      'MAPPING_EXISTS',
     );
+
+    const second = await addDevice(devices, userId);
+    await service.addSpaceMember(userId, space.id, second.id);
+    await expect(
+      service.createMapping(userId, space.id, {
+        deviceId: second.id,
+        localPathLabel: 'Pictures',
+        onlyMedia: false,
+      }),
+    ).resolves.toMatchObject({ deviceId: second.id, localPathLabel: 'Pictures' });
   });
 
-  it('更新时排除自身做重叠校验，他人映射按 404 隐藏', async () => {
+  it('更新映射只改标签与过滤规则，他人的映射按 404 隐藏', async () => {
     const { service, space, device, userId } = await setupSpace();
-    const input = {
+    const mapping = await service.createMapping(userId, space.id, {
       deviceId: device.id,
       localPathLabel: 'DCIM',
-      includeSubdirs: true,
       onlyMedia: false,
-    };
-    const first = await service.createMapping(userId, space.id, {
-      ...input,
-      remotePrefix: 'Camera',
-    });
-    const second = await service.createMapping(userId, space.id, {
-      ...input,
-      remotePrefix: 'Other',
     });
 
-    const updated = await service.updateMapping(userId, first.id, {
-      remotePrefix: '\\Camera\\2024//',
+    const updated = await service.updateMapping(userId, mapping.id, {
+      localPathLabel: '  Camera  ',
       onlyMedia: true,
     });
-    expect(updated.remotePrefix).toBe('Camera/2024');
+    expect(updated.localPathLabel).toBe('Camera');
     expect(updated.onlyMedia).toBe(true);
     await expectAppError(
-      () => service.updateMapping(userId, second.id, { remotePrefix: 'Camera/2024/child' }),
-      409,
-      'MAPPING_OVERLAP',
-    );
-    await expectAppError(
-      () => service.updateMapping('user-2', first.id, { localPathLabel: 'hack' }),
+      () => service.updateMapping('user-2', mapping.id, { localPathLabel: 'hack' }),
       404,
       'MAPPING_NOT_FOUND',
     );
-    await expectAppError(() => service.deleteMapping('user-2', first.id), 404, 'MAPPING_NOT_FOUND');
+    await expectAppError(() => service.deleteMapping('user-2', mapping.id), 404, 'MAPPING_NOT_FOUND');
 
-    await service.deleteMapping(userId, first.id);
-    await expectAppError(() => service.deleteMapping(userId, first.id), 404, 'MAPPING_NOT_FOUND');
+    await service.deleteMapping(userId, mapping.id);
+    await expectAppError(() => service.deleteMapping(userId, mapping.id), 404, 'MAPPING_NOT_FOUND');
   });
 });
 
@@ -393,15 +491,12 @@ describe('SpaceService scan-manifest', () => {
     const mapping = await service.createMapping(userId, space.id, {
       deviceId: device.id,
       localPathLabel: 'DCIM',
-      remotePrefix: 'Camera',
-      includeSubdirs: true,
       onlyMedia: false,
     });
-    seedFile(spaces, space.id, 'Camera/same.jpg', HASH_A);
-    seedFile(spaces, space.id, 'Camera/changed.jpg', HASH_A);
-    seedFile(spaces, space.id, 'Camera/missing.jpg', HASH_A);
-    seedFile(spaces, space.id, 'Other/outside.jpg', HASH_A);
-    seedFile(spaces, space.id, 'Camera/deleted.jpg', HASH_A, true);
+    seedFile(spaces, space.id, 'same.jpg', HASH_A);
+    seedFile(spaces, space.id, 'changed.jpg', HASH_A);
+    seedFile(spaces, space.id, 'missing.jpg', HASH_A);
+    seedFile(spaces, space.id, 'deleted.jpg', HASH_A, true);
 
     const result = await service.scanManifest(userId, space.id, {
       deviceId: device.id,
@@ -424,7 +519,7 @@ describe('SpaceService scan-manifest', () => {
     });
     expect(result.remoteFiles).toHaveLength(3);
     expect(result.remoteFiles[0]).toMatchObject({ size: 123, version: 2 });
-    expect(result.remoteFiles.some((file) => file.relativePath === 'Camera/deleted.jpg')).toBe(false);
+    expect(result.remoteFiles.some((file) => file.relativePath === 'deleted.jpg')).toBe(false);
   });
 
   it('scanComplete=false 时不推断下载且 diffComplete=false', async () => {
@@ -432,8 +527,6 @@ describe('SpaceService scan-manifest', () => {
     const mapping = await service.createMapping(userId, space.id, {
       deviceId: device.id,
       localPathLabel: 'Root',
-      remotePrefix: '',
-      includeSubdirs: true,
       onlyMedia: false,
     });
     seedFile(spaces, space.id, 'remote.jpg', HASH_A);
@@ -467,8 +560,6 @@ describe('SpaceService scan-manifest', () => {
     const mapping = await service.createMapping(userId, space.id, {
       deviceId: device.id,
       localPathLabel: 'Root',
-      remotePrefix: '',
-      includeSubdirs: true,
       onlyMedia: false,
     });
     for (let index = 0; index < 10001; index += 1) {
@@ -487,53 +578,49 @@ describe('SpaceService scan-manifest', () => {
     expect(result.summary.diffComplete).toBe(false);
   });
 
-  it('Camera 与 Documents 前缀互不计数，remoteFiles 保留完整空间路径', async () => {
-    const { service, spaces, space, device, userId } = await setupSpace();
-    const camera = await service.createMapping(userId, space.id, {
+  it('同空间的两台设备各自绑定目录后看到同一棵树', async () => {
+    const { service, devices, spaces, space, device, userId } = await setupSpace();
+    const first = await service.createMapping(userId, space.id, {
       deviceId: device.id,
       localPathLabel: 'DCIM',
-      remotePrefix: 'Camera',
-      includeSubdirs: true,
       onlyMedia: false,
     });
-    const documents = await service.createMapping(userId, space.id, {
-      deviceId: device.id,
+    const secondDevice = await addDevice(devices, userId);
+    await service.addSpaceMember(userId, space.id, secondDevice.id);
+    const second = await service.createMapping(userId, space.id, {
+      deviceId: secondDevice.id,
       localPathLabel: 'Documents',
-      remotePrefix: 'Documents',
-      includeSubdirs: true,
       onlyMedia: false,
     });
-    seedFile(spaces, space.id, 'Camera/photo.jpg', HASH_A);
-    seedFile(spaces, space.id, 'Documents/report.pdf', HASH_A);
+    seedFile(spaces, space.id, 'photo.jpg', HASH_A);
+    seedFile(spaces, space.id, 'report.pdf', HASH_A);
 
-    const cameraResult = await service.scanManifest(userId, space.id, {
+    const firstResult = await service.scanManifest(userId, space.id, {
       deviceId: device.id,
-      mappingId: camera.id,
+      mappingId: first.id,
       scanComplete: true,
       files: [],
     });
-    const documentsResult = await service.scanManifest(userId, space.id, {
-      deviceId: device.id,
-      mappingId: documents.id,
+    const secondResult = await service.scanManifest(userId, space.id, {
+      deviceId: secondDevice.id,
+      mappingId: second.id,
       scanComplete: true,
       files: [],
     });
 
-    expect(cameraResult.summary).toMatchObject({ remoteCount: 1, toDownload: 1 });
-    expect(cameraResult.remoteFiles.map((file) => file.relativePath)).toEqual(['Camera/photo.jpg']);
-    expect(documentsResult.summary).toMatchObject({ remoteCount: 1, toDownload: 1 });
-    expect(documentsResult.remoteFiles.map((file) => file.relativePath)).toEqual([
-      'Documents/report.pdf',
+    expect(firstResult.summary).toMatchObject({ remoteCount: 2, toDownload: 2 });
+    expect(secondResult.summary).toMatchObject({ remoteCount: 2, toDownload: 2 });
+    expect(firstResult.remoteFiles.map((file) => file.relativePath)).toEqual([
+      'photo.jpg',
+      'report.pdf',
     ]);
   });
 
-  it('根映射和 includeSubdirs=false 只统计直接子文件，媒体过滤且不猜测缺失 hash 冲突', async () => {
+  it('媒体过滤且不猜测缺失 hash 冲突，子目录文件参与同步', async () => {
     const { service, spaces, space, device, userId } = await setupSpace();
     const mapping = await service.createMapping(userId, space.id, {
       deviceId: device.id,
       localPathLabel: 'Root',
-      remotePrefix: '',
-      includeSubdirs: false,
       onlyMedia: true,
     });
     seedFile(spaces, space.id, 'root.jpg', HASH_A);
@@ -553,11 +640,15 @@ describe('SpaceService scan-manifest', () => {
     });
 
     expect(result.summary).toMatchObject({
-      remoteCount: 2,
-      toUpload: 0,
-      toDownload: 1,
+      remoteCount: 3,
+      toUpload: 1,
+      toDownload: 2,
       conflictCount: 0,
     });
-    expect(result.remoteFiles.map((file) => file.relativePath)).toEqual(['movie.MP4', 'root.jpg']);
+    expect(result.remoteFiles.map((file) => file.relativePath)).toEqual([
+      'movie.MP4',
+      'nested/child.jpg',
+      'root.jpg',
+    ]);
   });
 });

@@ -15,8 +15,6 @@ export interface MappingsRoutesOptions {
 const mappingParamsSchema = z.object({ mappingId: z.string().uuid() });
 const updateMappingBodySchema = z.object({
   localPathLabel: z.string().trim().min(1).max(256).optional(),
-  remotePrefix: z.string().optional(),
-  includeSubdirs: z.boolean().optional(),
   onlyMedia: z.boolean().optional(),
 });
 
@@ -59,8 +57,6 @@ const mappingsRoutes: FastifyPluginAsync<MappingsRoutesOptions> = async (app, op
           additionalProperties: false,
           properties: {
             localPathLabel: { type: 'string', minLength: 1, maxLength: 256 },
-            remotePrefix: { type: 'string' },
-            includeSubdirs: { type: 'boolean' },
             onlyMedia: { type: 'boolean' },
           },
         },

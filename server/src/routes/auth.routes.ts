@@ -35,6 +35,9 @@ const logoutBodySchema = z.object({
   refreshToken: z.string().min(1),
 });
 
+/** 登出时可选携带本机设备 ID（X-Device-Id），用于把设备从列表移除 */
+const deviceIdHeaderSchema = z.string().uuid();
+
 const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opts) => {
   const { authService, jwt } = opts;
 
@@ -153,7 +156,12 @@ const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opts) => {
     },
     async (request: FastifyRequest, reply) => {
       const body = parse(logoutBodySchema, request.body);
-      await authService.logout(authUserId(request), body.refreshToken);
+      const deviceId = deviceIdHeaderSchema.safeParse(request.headers['x-device-id']);
+      await authService.logout(
+        authUserId(request),
+        body.refreshToken,
+        deviceId.success ? deviceId.data : undefined,
+      );
       return reply.status(204).send();
     },
   );

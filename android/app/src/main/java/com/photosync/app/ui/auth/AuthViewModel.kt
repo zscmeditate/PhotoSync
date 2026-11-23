@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.photosync.app.data.remote.ApiResult
 import com.photosync.app.data.repository.AuthRepository
+import com.photosync.app.data.repository.DeviceRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,7 +34,8 @@ internal fun validateDisplayName(name: String): String? =
 
 /** 登录页 ViewModel */
 class LoginViewModel(
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val deviceRepository: DeviceRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AuthFormState>(AuthFormState.Idle)
@@ -49,8 +51,8 @@ class LoginViewModel(
             _state.value = AuthFormState.Loading
             when (val result = authRepository.login(email.trim(), password)) {
                 is ApiResult.Success -> {
-                    // 登录成功后自动注册本机设备
-                    authRepository.registerThisDevice(deviceName)
+                    // 登录成功后确保本机已登记为有效设备（已有则复用，不重复注册）
+                    deviceRepository.ensureThisDevice(deviceName)
                     _state.value = AuthFormState.Success
                 }
                 is ApiResult.Failure -> _state.value = AuthFormState.Error(result.message)
@@ -65,7 +67,8 @@ class LoginViewModel(
 
 /** 注册页 ViewModel */
 class RegisterViewModel(
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val deviceRepository: DeviceRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AuthFormState>(AuthFormState.Idle)
@@ -83,8 +86,8 @@ class RegisterViewModel(
             _state.value = AuthFormState.Loading
             when (val result = authRepository.register(email.trim(), password, displayName.trim())) {
                 is ApiResult.Success -> {
-                    // 注册成功后自动注册本机设备
-                    authRepository.registerThisDevice(deviceName)
+                    // 注册成功后确保本机已登记为有效设备（已有则复用，不重复注册）
+                    deviceRepository.ensureThisDevice(deviceName)
                     _state.value = AuthFormState.Success
                 }
                 is ApiResult.Failure -> _state.value = AuthFormState.Error(result.message)

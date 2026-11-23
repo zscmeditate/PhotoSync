@@ -125,7 +125,7 @@ fun SpaceCard(
                     RoleBadge(space.role)
                 }
                 Text(
-                    text = "${space.memberCount} 台设备 · ${space.mappingCount} 个目录映射",
+                    text = "${space.memberCount} 台设备 · ${space.mappingCount} 台已绑定目录",
                     style = MaterialTheme.typography.bodySmall,
                     color = OnSurfaceMuted,
                     modifier = Modifier.padding(top = 4.dp)

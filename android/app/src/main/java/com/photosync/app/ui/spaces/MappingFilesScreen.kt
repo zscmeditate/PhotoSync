@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -50,7 +51,7 @@ fun MappingFilesScreen(
     val mapping by viewModel.mapping.collectAsStateWithLifecycle()
     val files by viewModel.files.collectAsStateWithLifecycle()
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         SpacePageHeader(title = mapping?.localPathLabel ?: "映射文件", onBack = onBack)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -66,7 +67,7 @@ fun MappingFilesScreen(
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "远端：/${mapping?.remotePrefix.orEmpty()}",
+                                text = "空间根目录",
                                 style = MaterialTheme.typography.titleMedium,
                                 modifier = Modifier.weight(1f)
                             )

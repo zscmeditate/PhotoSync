@@ -51,7 +51,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
-import com.photosync.app.data.repository.DEFAULT_DEVICE_NAME
 import com.photosync.app.ui.components.AppTextField
 import com.photosync.app.ui.components.ErrorBanner
 import com.photosync.app.ui.components.PrimaryButton
@@ -68,13 +67,13 @@ fun LoginScreen(
 ) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val viewModel: LoginViewModel = viewModel {
-        LoginViewModel(app.container.authRepository)
+        LoginViewModel(app.container.authRepository, app.container.deviceRepository)
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
-    var deviceName by rememberSaveable { mutableStateOf(DEFAULT_DEVICE_NAME) }
+    var deviceName by rememberSaveable { mutableStateOf(app.container.deviceName) }
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }

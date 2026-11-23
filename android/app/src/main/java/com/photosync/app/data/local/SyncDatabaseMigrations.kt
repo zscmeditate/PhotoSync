@@ -72,4 +72,61 @@ object SyncDatabaseMigrations {
             db.execSQL("ALTER TABLE `local_sync_tasks` ADD COLUMN `oldLocalRelativePath` TEXT")
         }
     }
+
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `local_devices` ADD COLUMN `isPrimary` INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "ALTER TABLE `local_devices` ADD COLUMN `isRejoinRequested` INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+    }
+
+    /** 一个空间在一台设备上只保留一条目录映射，远端树直接由该目录结构决定。 */
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "DELETE FROM `local_folder_mappings` WHERE `rowid` NOT IN (" +
+                    "SELECT m.`rowid` FROM `local_folder_mappings` m WHERE NOT EXISTS (" +
+                    "SELECT 1 FROM `local_folder_mappings` n " +
+                    "WHERE n.`spaceId` = m.`spaceId` AND n.`deviceId` = m.`deviceId` AND (" +
+                    "COALESCE(n.`createdAt`, '') > COALESCE(m.`createdAt`, '') OR (" +
+                    "COALESCE(n.`createdAt`, '') = COALESCE(m.`createdAt`, '') AND n.`rowid` > m.`rowid`))))"
+            )
+            db.execSQL(
+                "DELETE FROM `local_file_index` WHERE `mappingId` NOT IN " +
+                    "(SELECT `id` FROM `local_folder_mappings`)"
+            )
+            db.execSQL(
+                "DELETE FROM `local_sync_tasks` WHERE `mappingId` NOT IN " +
+                    "(SELECT `id` FROM `local_folder_mappings`)"
+            )
+            db.execSQL("ALTER TABLE `local_folder_mappings` RENAME TO `local_folder_mappings_old`")
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `local_folder_mappings` (" +
+                    "`id` TEXT NOT NULL, `spaceId` TEXT NOT NULL, `deviceId` TEXT NOT NULL, " +
+                    "`localPathLabel` TEXT NOT NULL, `treeUri` TEXT NOT NULL, " +
+                    "`onlyMedia` INTEGER NOT NULL, `status` TEXT NOT NULL, " +
+                    "`lastScanComplete` INTEGER NOT NULL, `lastScannedAt` TEXT, `createdAt` TEXT, " +
+                    "PRIMARY KEY(`id`))"
+            )
+            db.execSQL(
+                "INSERT INTO `local_folder_mappings` (`id`, `spaceId`, `deviceId`, " +
+                    "`localPathLabel`, `treeUri`, `onlyMedia`, `status`, `lastScanComplete`, " +
+                    "`lastScannedAt`, `createdAt`) SELECT `id`, `spaceId`, `deviceId`, " +
+                    "`localPathLabel`, `treeUri`, `onlyMedia`, `status`, `lastScanComplete`, " +
+                    "`lastScannedAt`, `createdAt` FROM `local_folder_mappings_old`"
+            )
+            db.execSQL("DROP TABLE `local_folder_mappings_old`")
+            db.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_folder_mappings_spaceId_deviceId` " +
+                    "ON `local_folder_mappings` (`spaceId`, `deviceId`)"
+            )
+        }
+    }
 }

@@ -175,7 +175,14 @@ interface LocalSyncTaskDao {
     @Query("UPDATE local_sync_tasks SET state = 'PENDING', error = NULL, updatedAt = :now WHERE spaceId = :spaceId AND state = 'RUNNING'")
     suspend fun recoverRunning(spaceId: String, now: Long)
 
-    @Query("UPDATE local_sync_tasks SET state = 'PENDING', updatedAt = :now WHERE spaceId = :spaceId AND state = 'FAILED'")
+    // 远端对象已永久丢失的任务重试也必然失败，保留 FAILED 状态供用户查看/取消，避免反复入队。
+    @Query(
+        """
+        UPDATE local_sync_tasks SET state = 'PENDING', updatedAt = :now
+        WHERE spaceId = :spaceId AND state = 'FAILED'
+          AND (error IS NULL OR error NOT LIKE 'OBJECT_NOT_FOUND%')
+        """
+    )
     suspend fun requeueFailed(spaceId: String, now: Long)
 
     @Query(

@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -41,6 +42,7 @@ import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.ErrorBanner
 import com.photosync.app.ui.components.PrimaryButton
+import com.photosync.app.ui.components.SecondaryButton
 import com.photosync.app.ui.theme.PrimaryBlue
 
 @Composable
@@ -48,10 +50,12 @@ fun SpaceListScreen(
     viewModel: SpaceListViewModel,
     onOpenSpace: (String) -> Unit,
     onCreateSpace: () -> Unit,
+    onJoinSpace: () -> Unit,
     onEditSpace: (String) -> Unit
 ) {
     val spaces by viewModel.spaces.collectAsStateWithLifecycle()
     val mappings by viewModel.mappings.collectAsStateWithLifecycle()
+    val canCreateSpace by viewModel.canCreateSpace.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val loadError by viewModel.loadError.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -76,8 +80,13 @@ fun SpaceListScreen(
                     IconButton(onClick = viewModel::refresh) {
                         Icon(Icons.Filled.Refresh, contentDescription = "刷新空间")
                     }
-                    IconButton(onClick = onCreateSpace) {
-                        Icon(Icons.Filled.Add, contentDescription = "创建空间", tint = PrimaryBlue)
+                    IconButton(onClick = onJoinSpace) {
+                        Icon(Icons.Filled.GroupAdd, contentDescription = "加入空间")
+                    }
+                    if (canCreateSpace) {
+                        IconButton(onClick = onCreateSpace) {
+                            Icon(Icons.Filled.Add, contentDescription = "创建空间", tint = PrimaryBlue)
+                        }
                     }
                 }
             )
@@ -116,13 +125,26 @@ fun SpaceListScreen(
                         EmptyStateView(
                             icon = Icons.Filled.Folder,
                             title = if (abnormalOnly) "没有异常空间" else "暂无同步空间",
-                            subtitle = if (abnormalOnly) "所有本机目录映射均无需处理" else "创建一个空间，再选择本机目录开始建立索引"
+                            subtitle = if (abnormalOnly) {
+                                "所有本机目录映射均无需处理"
+                            } else if (canCreateSpace) {
+                                "创建一个新空间，或加入同一账号下已有的空间，再选择本机目录"
+                            } else {
+                                "加入同一账号下已有的空间，再选择本机目录；创建空间需要使用主设备"
+                            }
                         )
                         if (!abnormalOnly) {
-                            PrimaryButton(
-                                text = "创建同步空间",
-                                onClick = onCreateSpace,
-                                leadingIcon = Icons.Filled.Add
+                            if (canCreateSpace) {
+                                PrimaryButton(
+                                    text = "创建同步空间",
+                                    onClick = onCreateSpace,
+                                    leadingIcon = Icons.Filled.Add
+                                )
+                                Spacer(Modifier.height(10.dp))
+                            }
+                            SecondaryButton(
+                                text = "加入已有空间",
+                                onClick = onJoinSpace
                             )
                         }
                     }

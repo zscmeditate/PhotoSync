@@ -3,6 +3,7 @@ package com.photosync.app.data.sync
 import androidx.documentfile.provider.DocumentFile
 import com.photosync.app.data.local.FileSyncStatus
 import com.photosync.app.data.local.LocalFileIndex
+import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.local.LocalSyncCursor
 import com.photosync.app.data.local.LocalSyncTask
 import com.photosync.app.data.local.MappingStatus
@@ -10,6 +11,8 @@ import com.photosync.app.data.local.SyncTaskState
 import com.photosync.app.data.local.SyncTaskType
 import com.photosync.app.data.remote.ApiResult
 import com.photosync.app.data.remote.FileOperationRequest
+import com.photosync.app.data.remote.ScanManifestFile
+import com.photosync.app.data.remote.ScanManifestRequest
 import com.photosync.app.data.remote.SyncEventPayloadDto
 import com.photosync.app.data.remote.SyncAckRequest
 import com.photosync.app.data.remote.SyncEventDto
@@ -32,14 +35,17 @@ class SyncEngine(
     private val api = repository.apiClient.api
 
     suspend fun syncAll(): SyncRunResult {
+        var result = SyncRunResult.SUCCESS
         for (spaceId in repository.spaceIds()) {
             when (syncSpace(spaceId)) {
                 SyncRunResult.SUCCESS -> Unit
-                SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                SyncRunResult.FAILURE -> return SyncRunResult.FAILURE
+                SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) {
+                    result = SyncRunResult.RETRY
+                }
+                SyncRunResult.FAILURE -> result = SyncRunResult.FAILURE
             }
         }
-        return SyncRunResult.SUCCESS
+        return result
     }
 
     suspend fun syncSpace(spaceId: String): SyncRunResult {
@@ -54,7 +60,21 @@ class SyncEngine(
                     is ApiResult.Success -> Unit
                 }
                 val newIndex = repository.files(mapping.id)
-                repository.planAndEnqueueLocalChanges(spaceId, mapping, oldIndex, newIndex)
+                // 新绑定/重新绑定的映射先与远端清单核对，已存在的相同文件直接建立关联，
+                // 并以关联后的索引作为差异基线，避免把相同文件重复规划为上传。
+                var baseline = oldIndex
+                var current = newIndex
+                if (oldIndex.isEmpty() && newIndex.isNotEmpty()) {
+                    when (reconcileFreshMapping(mapping, newIndex)) {
+                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                        else -> Unit
+                    }
+                    current = repository.files(mapping.id)
+                    baseline = current.filter {
+                        it.status == FileSyncStatus.SYNCED && !it.remoteFileId.isNullOrBlank()
+                    }
+                }
+                repository.planAndEnqueueLocalChanges(spaceId, mapping, baseline, current)
             }
         } catch (e: CancellationException) {
             throw e
@@ -62,12 +82,13 @@ class SyncEngine(
             return SyncRunResult.FAILURE
         }
 
+        var taskFailed = false
         while (true) {
             val task = repository.nextPendingUpload(spaceId) ?: break
             when (upload(task)) {
                 SyncRunResult.SUCCESS -> Unit
                 SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                SyncRunResult.FAILURE -> return SyncRunResult.FAILURE
+                SyncRunResult.FAILURE -> taskFailed = true
             }
         }
         while (true) {
@@ -75,10 +96,58 @@ class SyncEngine(
             when (commitMutation(task)) {
                 SyncRunResult.SUCCESS -> Unit
                 SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                SyncRunResult.FAILURE -> return SyncRunResult.FAILURE
+                SyncRunResult.FAILURE -> taskFailed = true
             }
         }
-        return pullChanges(spaceId, deviceId, mappings)
+        // 单个任务失败不应阻断本轮的远端变更拉取：先拉取，再在末尾汇报失败。
+        val pulled = pullChanges(spaceId, deviceId, mappings)
+        return when {
+            pulled != SyncRunResult.SUCCESS -> pulled
+            taskFailed -> SyncRunResult.FAILURE
+            else -> SyncRunResult.SUCCESS
+        }
+    }
+
+    /**
+     * 首次绑定（本地索引为空）时，用本地清单向服务端换取远端文件清单，
+     * 把路径、大小、sha256 均一致的远端文件标记为已同步，避免重复上传。
+     */
+    private suspend fun reconcileFreshMapping(
+        mapping: LocalFolderMapping,
+        index: List<LocalFileIndex>
+    ): SyncRunResult {
+        if (index.size > MAX_MANIFEST_FILES) return SyncRunResult.SUCCESS
+        val manifest = index.map { file ->
+            ScanManifestFile(
+                relativePath = file.relativePath,
+                size = file.size,
+                sha256 = file.sha256,
+                modifiedAt = null
+            )
+        }
+        return when (
+            val result = apiCall {
+                api.scanManifest(
+                    mapping.spaceId,
+                    ScanManifestRequest(
+                        deviceId = mapping.deviceId,
+                        mappingId = mapping.id,
+                        scanComplete = true,
+                        files = manifest
+                    )
+                )
+            }
+        ) {
+            is ApiResult.Failure -> if (result.isNetwork) {
+                SyncRunResult.RETRY
+            } else {
+                SyncRunResult.SUCCESS
+            }
+            is ApiResult.Success -> {
+                repository.reconcileRemoteLinks(mapping.id, result.data.remoteFiles)
+                SyncRunResult.SUCCESS
+            }
+        }
     }
 
     private suspend fun upload(task: LocalSyncTask): SyncRunResult {
@@ -95,10 +164,7 @@ class SyncEngine(
             ) {
                 return failUpload(current, "LOCAL_CONTENT_CHANGED", "文件在扫描后发生变化，请重新扫描")
             }
-            val remotePath = RemoteDownloadPlanner.remotePath(
-                mapping.remotePrefix,
-                index.relativePath
-            )
+            val remotePath = RemoteDownloadPlanner.remotePath(index.relativePath)
             if (remotePath != task.remoteRelativePath) {
                 return failUpload(current, "UPLOAD_PATH_CHANGED", "目录映射已变化，请重新扫描")
             }
@@ -359,7 +425,7 @@ class SyncEngine(
         try {
             DecimalContract.revision(since)
             val rules = mappings.map {
-                SyncMappingRule(it.id, it.remotePrefix, it.includeSubdirs, it.onlyMedia)
+                SyncMappingRule(it.id, it.onlyMedia)
             }
             while (true) {
                 val changes = when (
@@ -478,8 +544,15 @@ class SyncEngine(
             val expectedSize = DecimalContract.long(sizeRaw, "event.payload.size")
             val expectedSha256 = DecimalContract.requireSha256(shaRaw)
             // 已落库的失败任务始终阻塞游标，即使映射随后被停用也不能跳过该事件。
+            // 例外：对象已在服务端永久丢失时无法重试，跳过该事件以免阻塞整轮同步（任务记录保留）。
             val existingTask = repository.taskForEvent(spaceId, event.revision)
-            if (existingTask?.state == SyncTaskState.FAILED) return SyncRunResult.FAILURE
+            if (existingTask?.state == SyncTaskState.FAILED) {
+                return if (isObjectMissing(existingTask.error)) {
+                    SyncRunResult.SUCCESS
+                } else {
+                    SyncRunResult.FAILURE
+                }
+            }
             if (existingTask?.state == SyncTaskState.COMPLETED) return SyncRunResult.SUCCESS
             val plan = RemoteDownloadPlanner.plan(payload.relativePath ?: "", mappings)
                 ?: return if (existingTask == null) SyncRunResult.SUCCESS else SyncRunResult.FAILURE
@@ -843,8 +916,16 @@ class SyncEngine(
             return SyncRunResult.RETRY
         }
         repository.markTaskFailed(task, failure.code ?: "DOWNLOAD_REQUEST_FAILED", failure.message)
+        // 服务端对象已永久丢失（404 OBJECT_NOT_FOUND）：记录失败任务后跳过该事件，
+        // 否则游标会被永久卡住，后续所有变更都无法同步。
+        if (failure.code == OBJECT_NOT_FOUND) {
+            return SyncRunResult.SUCCESS
+        }
         return SyncRunResult.FAILURE
     }
+
+    private fun isObjectMissing(error: String?): Boolean =
+        error?.startsWith(OBJECT_NOT_FOUND) == true
 
     private suspend fun failUpload(
         task: LocalSyncTask,
@@ -911,5 +992,7 @@ class SyncEngine(
     private companion object {
         const val PART_SIZE = 8L * 1024L * 1024L
         const val PAGE_SIZE = 100
+        const val MAX_MANIFEST_FILES = 10000
+        const val OBJECT_NOT_FOUND = "OBJECT_NOT_FOUND"
     }
 }

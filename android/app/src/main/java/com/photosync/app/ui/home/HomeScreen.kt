@@ -10,7 +10,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +29,7 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
@@ -35,14 +39,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -97,29 +99,56 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf(HomeTab.OVERVIEW) }
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val spaceViewModel: SpaceListViewModel = viewModel {
-        SpaceListViewModel(app.container.spaceRepository)
+        SpaceListViewModel(app.container.spaceRepository, app.container.deviceRepository)
     }
 
     Scaffold(
         bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 8.dp
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
             ) {
-                HomeTab.entries.forEach { item ->
-                    NavigationBarItem(
-                        selected = tab == item,
-                        onClick = { tab = item },
-                        icon = { Icon(item.icon, contentDescription = item.label) },
-                        label = { Text(item.label) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = PrimaryBlue,
-                            selectedTextColor = PrimaryBlue,
-                            indicatorColor = Color.Transparent,
-                            unselectedIconColor = OnSurfaceMuted,
-                            unselectedTextColor = OnSurfaceMuted
-                        )
-                    )
+                HorizontalDivider(
+                    thickness = 0.5.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .height(52.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    HomeTab.entries.forEach { item ->
+                        val selected = tab == item
+                        val tint = if (selected) PrimaryBlue else OnSurfaceMuted
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { tab = item },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = item.icon,
+                                contentDescription = item.label,
+                                tint = tint,
+                                modifier = Modifier.size(21.dp)
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = item.label,
+                                fontSize = 10.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = tint
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -134,6 +163,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                     viewModel = spaceViewModel,
                     onOpenSpace = { navController.navigate(Screen.SpaceDetail(it).route) },
                     onCreateSpace = { navController.navigate(Screen.SpaceCreate.route) },
+                    onJoinSpace = { navController.navigate(Screen.JoinSpace.route) },
                     onShowAll = { tab = HomeTab.FILES },
                     onOpenActivity = { navController.navigate(Screen.ActivityLog.route) }
                 )
@@ -141,6 +171,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                     viewModel = spaceViewModel,
                     onOpenSpace = { navController.navigate(Screen.SpaceDetail(it).route) },
                     onCreateSpace = { navController.navigate(Screen.SpaceCreate.route) },
+                    onJoinSpace = { navController.navigate(Screen.JoinSpace.route) },
                     onEditSpace = { navController.navigate(Screen.SpaceEdit(it).route) }
                 )
                 HomeTab.DEVICES -> DeviceListScreen()
@@ -159,11 +190,13 @@ private fun HomeOverviewTab(
     viewModel: SpaceListViewModel,
     onOpenSpace: (String) -> Unit,
     onCreateSpace: () -> Unit,
+    onJoinSpace: () -> Unit,
     onShowAll: () -> Unit,
     onOpenActivity: () -> Unit
 ) {
     val spaces by viewModel.spaces.collectAsStateWithLifecycle()
     val mappings by viewModel.mappings.collectAsStateWithLifecycle()
+    val canCreateSpace by viewModel.canCreateSpace.collectAsStateWithLifecycle()
     val abnormalSpaceIds = mappings.filter {
         it.status == MappingStatus.ERROR || it.status == MappingStatus.ACCESS_REVOKED
     }.map { it.spaceId }.toSet()
@@ -227,7 +260,7 @@ private fun HomeOverviewTab(
                 text = if (spaces.isEmpty()) {
                     "创建空间并添加本地目录后，这里会显示空间与映射摘要。"
                 } else {
-                    "共 ${spaces.sumOf { it.mappingCount }} 个目录映射"
+                    "共 ${spaces.sumOf { it.mappingCount }} 台设备已绑定目录"
                 },
                 color = OnSurfaceMuted,
                 style = MaterialTheme.typography.bodySmall
@@ -252,7 +285,7 @@ private fun HomeOverviewTab(
             StatCard(
                 icon = Icons.Filled.Sync,
                 value = "${spaces.sumOf { it.mappingCount }}",
-                label = "目录映射",
+                label = "已绑定目录",
                 modifier = Modifier.weight(1f)
             )
         }
@@ -265,8 +298,13 @@ private fun HomeOverviewTab(
                 actionText = if (spaces.isNotEmpty()) "全部" else null,
                 onAction = if (spaces.isNotEmpty()) onShowAll else null
             )
-            IconButton(onClick = onCreateSpace) {
-                Icon(Icons.Filled.Add, contentDescription = "创建空间", tint = PrimaryBlue)
+            IconButton(onClick = onJoinSpace) {
+                Icon(Icons.Filled.GroupAdd, contentDescription = "加入空间")
+            }
+            if (canCreateSpace) {
+                IconButton(onClick = onCreateSpace) {
+                    Icon(Icons.Filled.Add, contentDescription = "创建空间", tint = PrimaryBlue)
+                }
             }
         }
         if (spaces.isEmpty()) {
@@ -274,7 +312,11 @@ private fun HomeOverviewTab(
                 EmptyStateView(
                     icon = Icons.Filled.Folder,
                     title = "暂无同步空间",
-                    subtitle = "点击 + 创建空间，再添加一个或多个本地目录"
+                    subtitle = if (canCreateSpace) {
+                        "点击 + 创建空间，或加入已有空间，再选择本地目录"
+                    } else {
+                        "加入已有空间并选择本地目录；创建空间需要使用主设备"
+                    }
                 )
             }
         } else {

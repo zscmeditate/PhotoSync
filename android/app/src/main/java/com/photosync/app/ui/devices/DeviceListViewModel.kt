@@ -21,11 +21,16 @@ sealed interface DeviceListUiState {
     data class Error(val message: String) : DeviceListUiState
 }
 
-/** 设备管理 ViewModel：列表 / 重命名 / 移除 / 添加（注册本机）。 */
+/** 设备管理 ViewModel：列表 / 重命名。设备由登录自动登记，不支持手动添加。 */
 class DeviceListViewModel(
-    private val deviceRepository: DeviceRepository
+    private val deviceRepository: DeviceRepository,
+    private val deviceName: String
 ) : ViewModel() {
 
+    /**
+     * 展示账号下所有已登录设备（含被主设备移除的设备，状态显示为“被移除”）。
+     * 设备主动退出登录后由服务端从列表移除，这里自然不再出现。
+     */
     val devices: StateFlow<List<LocalDevice>> = deviceRepository.devices
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -35,6 +40,9 @@ class DeviceListViewModel(
     private val _messages = MutableSharedFlow<String>()
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
+    private val _actionInProgress = MutableStateFlow(false)
+    val actionInProgress: StateFlow<Boolean> = _actionInProgress.asStateFlow()
+
     init {
         refresh()
     }
@@ -42,6 +50,8 @@ class DeviceListViewModel(
     fun refresh() {
         viewModelScope.launch {
             _uiState.value = DeviceListUiState.Loading
+            // 本机未登记或凭据被吊销时自动补登记。
+            deviceRepository.ensureThisDevice(deviceName)
             when (val result = deviceRepository.refreshDevices()) {
                 is ApiResult.Success -> _uiState.value = DeviceListUiState.Ready
                 is ApiResult.Failure -> {
@@ -67,21 +77,121 @@ class DeviceListViewModel(
         }
     }
 
-    fun remove(deviceId: String) {
+    /** 本机抢占主设备身份（账号没有主设备时才允许）。 */
+    fun claimPrimary() {
+        if (_actionInProgress.value) return
         viewModelScope.launch {
-            when (val result = deviceRepository.removeDevice(deviceId)) {
-                is ApiResult.Success -> _messages.emit("设备已移除，其本地文件不会被删除")
-                is ApiResult.Failure -> _messages.emit("移除失败：${result.message}")
+            _actionInProgress.value = true
+            when (val result = deviceRepository.claimPrimaryDevice()) {
+                is ApiResult.Success -> _messages.emit("本机已设为主设备")
+                is ApiResult.Failure -> {
+                    // 可能是别的设备刚抢占了主设备，刷新以同步最新状态
+                    deviceRepository.refreshDevices()
+                    _messages.emit(
+                        if (result.code == "PRIMARY_DEVICE_TAKEN") {
+                            "已有主设备，请先在主设备上放弃主设备身份"
+                        } else {
+                            "设置主设备失败：${result.message}"
+                        }
+                    )
+                }
             }
+            _actionInProgress.value = false
         }
     }
 
-    fun addThisDevice(deviceName: String) {
+    /** 主设备主动放弃身份，之后其它设备可以重新抢占。 */
+    fun releasePrimary() {
+        if (_actionInProgress.value) return
         viewModelScope.launch {
-            when (val result = deviceRepository.registerThisDevice(deviceName)) {
-                is ApiResult.Success -> _messages.emit("本机设备已注册")
-                is ApiResult.Failure -> _messages.emit("注册本机失败：${result.message}")
+            _actionInProgress.value = true
+            when (val result = deviceRepository.releasePrimaryDevice()) {
+                is ApiResult.Success -> _messages.emit("已放弃主设备身份")
+                is ApiResult.Failure -> _messages.emit("放弃主设备失败：${result.message}")
             }
+            _actionInProgress.value = false
+        }
+    }
+
+    /** 被移除的本机发起重新加入申请。 */
+    fun requestRejoin() {
+        if (_actionInProgress.value) return
+        viewModelScope.launch {
+            _actionInProgress.value = true
+            when (val result = deviceRepository.requestRejoin()) {
+                is ApiResult.Success -> _messages.emit("已提交重新加入申请，等待主设备同意")
+                is ApiResult.Failure -> {
+                    deviceRepository.refreshDevices()
+                    _messages.emit("申请重新加入失败：${result.message}")
+                }
+            }
+            _actionInProgress.value = false
+        }
+    }
+
+    /** 主设备同意被移除设备重新加入。 */
+    fun approveRejoin(deviceId: String) {
+        if (_actionInProgress.value) return
+        viewModelScope.launch {
+            _actionInProgress.value = true
+            when (val result = deviceRepository.approveRejoin(deviceId)) {
+                is ApiResult.Success -> _messages.emit("已同意该设备重新加入")
+                is ApiResult.Failure -> {
+                    deviceRepository.refreshDevices()
+                    _messages.emit(
+                        if (result.code == "DEVICE_NOT_PRIMARY") {
+                            "只有主设备才能同意重新加入"
+                        } else {
+                            "同意失败：${result.message}"
+                        }
+                    )
+                }
+            }
+            _actionInProgress.value = false
+        }
+    }
+
+    /** 主设备拒绝被移除设备的重新加入申请。 */
+    fun rejectRejoin(deviceId: String) {
+        if (_actionInProgress.value) return
+        viewModelScope.launch {
+            _actionInProgress.value = true
+            when (val result = deviceRepository.rejectRejoin(deviceId)) {
+                is ApiResult.Success -> _messages.emit("已拒绝该设备的重新加入申请")
+                is ApiResult.Failure -> {
+                    deviceRepository.refreshDevices()
+                    _messages.emit(
+                        if (result.code == "DEVICE_NOT_PRIMARY") {
+                            "只有主设备才能拒绝重新加入"
+                        } else {
+                            "拒绝失败：${result.message}"
+                        }
+                    )
+                }
+            }
+            _actionInProgress.value = false
+        }
+    }
+
+    /** 主设备移除从设备。 */
+    fun removeDevice(deviceId: String) {
+        if (_actionInProgress.value) return
+        viewModelScope.launch {
+            _actionInProgress.value = true
+            when (val result = deviceRepository.removeDevice(deviceId)) {
+                is ApiResult.Success -> _messages.emit("已移除从设备")
+                is ApiResult.Failure -> {
+                    deviceRepository.refreshDevices()
+                    _messages.emit(
+                        if (result.code == "DEVICE_NOT_PRIMARY") {
+                            "只有主设备才能移除其它设备"
+                        } else {
+                            "移除失败：${result.message}"
+                        }
+                    )
+                }
+            }
+            _actionInProgress.value = false
         }
     }
 }

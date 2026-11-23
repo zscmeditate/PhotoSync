@@ -1,5 +1,8 @@
 package com.photosync.app.ui.spaces
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -24,6 +28,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sync
@@ -34,11 +39,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,28 +54,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.LocalDevice
 import com.photosync.app.data.local.LocalFolderMapping
-import com.photosync.app.data.local.MappingStatus
+import com.photosync.app.data.remote.JoinRequestDto
 import com.photosync.app.data.remote.SpaceMemberDto
-import com.photosync.app.data.sync.FolderScanProgress
-import com.photosync.app.data.sync.RemotePrefix
 import com.photosync.app.data.sync.SyncScheduler
 import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SectionHeader
-import com.photosync.app.ui.components.appTextFieldColors
-import com.photosync.app.ui.theme.AccentCyan
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
@@ -90,35 +89,62 @@ fun SpaceDetailScreen(
     onOpenConflicts: (String) -> Unit
 ) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
+    val context = LocalContext.current
     val viewModel: SpaceDetailViewModel = viewModel(key = spaceId) {
         SpaceDetailViewModel(
             spaceRepository = app.container.spaceRepository,
             deviceRepository = app.container.deviceRepository,
             syncRepository = app.container.syncRepository,
-            scheduleSync = { SyncScheduler.enqueue(app) },
+            scheduleSync = { SyncScheduler.enqueue(app, force = true) },
             spaceId = spaceId
         )
     }
     val space by viewModel.space.collectAsStateWithLifecycle()
     val mappings by viewModel.mappings.collectAsStateWithLifecycle()
+    val bindingPending by viewModel.bindingPending.collectAsStateWithLifecycle()
     val fileCounts by viewModel.fileCounts.collectAsStateWithLifecycle()
     val members by viewModel.members.collectAsStateWithLifecycle()
+    val joinRequests by viewModel.joinRequests.collectAsStateWithLifecycle()
+    val resolvingRequestId by viewModel.resolvingRequestId.collectAsStateWithLifecycle()
     val devices by viewModel.devices.collectAsStateWithLifecycle()
     val loading by viewModel.loading.collectAsStateWithLifecycle()
     val membershipChanging by viewModel.membershipChanging.collectAsStateWithLifecycle()
-    val scanningIds by viewModel.scanningIds.collectAsStateWithLifecycle()
-    val scanProgress by viewModel.scanProgress.collectAsStateWithLifecycle()
     val syncStats by viewModel.syncStats.collectAsStateWithLifecycle()
+    val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    var editMapping by remember { mutableStateOf<LocalFolderMapping?>(null) }
-    var deleteMapping by remember { mutableStateOf<LocalFolderMapping?>(null) }
+    var changeTarget by remember { mutableStateOf<LocalFolderMapping?>(null) }
     var manageMembers by rememberSaveable { mutableStateOf(false) }
+    var exitConfirm by rememberSaveable { mutableStateOf(false) }
+    val thisDeviceIsMember = members.any { it.deviceId == viewModel.currentDeviceId }
+
+    val directoryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        val target = changeTarget
+        changeTarget = null
+        if (uri != null && target != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+                val label = DocumentFile.fromTreeUri(context, uri)?.name
+                    ?: uri.lastPathSegment?.substringAfterLast('/')
+                    ?: "已选目录"
+                viewModel.changeDirectory(target, uri.toString(), label)
+            } catch (e: SecurityException) {
+                viewModel.showMessage("目录授权失败：系统未授予持久读写权限，请重新选择")
+            } catch (e: Exception) {
+                viewModel.showMessage("目录授权失败：${e.message ?: "无法读取所选目录"}")
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
             SpacePageHeader(
                 title = space?.name ?: "空间详情",
@@ -142,56 +168,77 @@ fun SpaceDetailScreen(
                     if (loading) CircularProgressIndicator() else Text("未找到该空间，请返回刷新")
                 }
             } else {
-                val currentSpace = space!!
                 val latestScan = mappings.mapNotNull { it.lastScannedAt }.maxOrNull()
-                val hasError = syncStats.failedTasks > 0 || mappings.any {
-                    it.status == MappingStatus.ERROR || it.status == MappingStatus.ACCESS_REVOKED
-                }
-                val scanning = mappings.any { it.status == MappingStatus.SCANNING }
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    item {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Brush.horizontalGradient(listOf(PrimaryBlue, AccentCyan)))
-                                .padding(20.dp)
-                        ) {
-                            Text(
-                                text = when {
-                                    hasError -> "部分目录需要处理"
-                                    scanning -> "正在扫描本地目录"
-                                    mappings.isEmpty() -> "空间待配置"
-                                    else -> "本地索引已就绪"
-                                },
-                                style = MaterialTheme.typography.titleLarge,
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = "${currentSpace.memberCount} 台设备 · ${currentSpace.mappingCount} 个目录映射",
-                                color = Color.White.copy(alpha = 0.94f)
-                            )
-                            Text(
-                                text = "最近扫描：${formatIsoTime(latestScan)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.88f),
-                                modifier = Modifier.padding(top = 4.dp)
+                    if (canManageMembers && joinRequests.isNotEmpty()) {
+                        item { SectionHeader(title = "加入申请") }
+                        items(joinRequests, key = { "join-${it.id}" }) { request ->
+                            JoinRequestCard(
+                                request = request,
+                                resolving = resolvingRequestId == request.id,
+                                onApprove = { viewModel.resolveJoinRequest(request.id, true) },
+                                onReject = { viewModel.resolveJoinRequest(request.id, false) }
                             )
                         }
                     }
                     item {
-                        PrimaryButton(
-                            text = if (syncStats.runningTasks > 0) "正在同步…" else "立即同步",
-                            onClick = viewModel::syncNow,
-                            enabled = syncStats.runningTasks == 0,
-                            leadingIcon = Icons.Filled.Sync
-                        )
+                        Column {
+                            when {
+                                mappings.isNotEmpty() -> {
+                                    PrimaryButton(
+                                        text = if (syncStats.runningTasks > 0) "正在同步…" else "立即同步",
+                                        onClick = viewModel::syncNow,
+                                        enabled = syncStats.runningTasks == 0,
+                                        leadingIcon = Icons.Filled.Sync
+                                    )
+                                    Text(
+                                        text = "最近扫描：${formatIsoTime(latestScan)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurfaceMuted,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 6.dp)
+                                    )
+                                }
+                                bindingPending -> {
+                                    PrimaryButton(
+                                        text = "等待主设备同意",
+                                        onClick = viewModel::refresh,
+                                        leadingIcon = Icons.Filled.HourglassEmpty
+                                    )
+                                    Text(
+                                        text = "绑定申请已提交，同意后将自动完成目录绑定；点此刷新状态",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurfaceMuted,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 6.dp)
+                                    )
+                                }
+                                else -> {
+                                    PrimaryButton(
+                                        text = "绑定本地目录",
+                                        onClick = { onAddMapping(spaceId) },
+                                        leadingIcon = Icons.Filled.Add
+                                    )
+                                    Text(
+                                        text = "绑定目录后即可开始同步",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurfaceMuted,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 6.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                     item {
                         Surface(
@@ -220,13 +267,6 @@ fun SpaceDetailScreen(
                         }
                     }
                     item {
-                        PrimaryButton(
-                            text = "添加同步目录",
-                            onClick = { onAddMapping(spaceId) },
-                            leadingIcon = Icons.Filled.Add
-                        )
-                    }
-                    item {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -241,7 +281,7 @@ fun SpaceDetailScreen(
                             ) { Text("冲突处理") }
                         }
                     }
-                    item { SectionHeader(title = "本地目录映射") }
+                    item { SectionHeader(title = "本地目录") }
                     if (mappings.isEmpty()) {
                         item {
                             Surface(
@@ -250,8 +290,8 @@ fun SpaceDetailScreen(
                             ) {
                                 EmptyStateView(
                                     icon = Icons.Filled.Folder,
-                                    title = "尚未选择本机目录",
-                                    subtitle = "点击上方「添加同步目录」，通过系统文件选择器授权"
+                                    title = "尚未绑定本地目录",
+                                    subtitle = "点击上方「绑定本地目录」，该目录的结构会完整同步到空间"
                                 )
                             }
                         }
@@ -260,20 +300,27 @@ fun SpaceDetailScreen(
                             FolderMappingCard(
                                 mapping = mapping,
                                 fileCount = fileCounts.firstOrNull { it.mappingId == mapping.id }?.fileCount ?: 0,
-                                scanning = scanningIds.contains(mapping.id),
-                                progress = scanProgress[mapping.id],
                                 onOpenFiles = { onOpenMapping(mapping.id) },
-                                onRescan = { viewModel.rescan(mapping.id) },
-                                onEdit = { editMapping = mapping },
-                                onDelete = { deleteMapping = mapping }
+                                onChangeDirectory = {
+                                    changeTarget = mapping
+                                    directoryLauncher.launch(null)
+                                }
                             )
                         }
                     }
                     item {
                         SectionHeader(
                             title = "参与设备",
-                            actionText = "管理",
-                            onAction = { manageMembers = true }
+                            actionText = when {
+                                canManageMembers -> "管理"
+                                thisDeviceIsMember -> "退出空间"
+                                else -> null
+                            },
+                            onAction = when {
+                                canManageMembers -> ({ manageMembers = true })
+                                thisDeviceIsMember -> ({ exitConfirm = true })
+                                else -> null
+                            }
                         )
                     }
                     if (members.isEmpty()) {
@@ -290,28 +337,6 @@ fun SpaceDetailScreen(
         SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
     }
 
-    editMapping?.let { mapping ->
-        EditMappingDialog(
-            mapping = mapping,
-            siblings = mappings,
-            onDismiss = { editMapping = null },
-            onConfirm = { prefix, include, onlyMedia ->
-                viewModel.updateMapping(mapping, prefix, include, onlyMedia)
-                editMapping = null
-            }
-        )
-    }
-
-    deleteMapping?.let { mapping ->
-        ConfirmBottomSheet(
-            title = "删除目录映射",
-            message = "确定删除「${mapping.localPathLabel}」的映射？不会删除本地文件，也不会把本次操作当成本地文件删除。",
-            confirmText = "删除映射",
-            onConfirm = { viewModel.deleteMapping(mapping.id) },
-            onDismiss = { deleteMapping = null }
-        )
-    }
-
     if (manageMembers) {
         MemberManageDialog(
             devices = devices,
@@ -321,18 +346,75 @@ fun SpaceDetailScreen(
             onDismiss = { manageMembers = false }
         )
     }
+
+    if (exitConfirm) {
+        ConfirmBottomSheet(
+            title = "退出空间",
+            message = "确定让本机退出该空间吗？退出后本机不再参与同步。",
+            confirmText = "退出空间",
+            onConfirm = {
+                viewModel.exitSpace()
+                exitConfirm = false
+            },
+            onDismiss = { exitConfirm = false }
+        )
+    }
+}
+
+@Composable
+private fun JoinRequestCard(
+    request: JoinRequestDto,
+    resolving: Boolean,
+    onApprove: () -> Unit,
+    onReject: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Smartphone, contentDescription = null, tint = PrimaryBlue)
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "${request.deviceName} 申请加入空间",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "申请时间：${formatIsoTime(request.requestedAt)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceMuted,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (resolving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                TextButton(onClick = onReject, enabled = !resolving) { Text("拒绝") }
+                TextButton(onClick = onApprove, enabled = !resolving) { Text("同意") }
+            }
+        }
+    }
 }
 
 @Composable
 private fun FolderMappingCard(
     mapping: LocalFolderMapping,
     fileCount: Int,
-    scanning: Boolean,
-    progress: FolderScanProgress?,
     onOpenFiles: () -> Unit,
-    onRescan: () -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onChangeDirectory: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -355,15 +437,10 @@ private fun FolderMappingCard(
                 MappingStatusChip(mapping.status)
             }
             Text(
-                text = "远端：/${mapping.remotePrefix}",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 6.dp)
-            )
-            Text(
-                text = "$fileCount 个文件 · ${if (mapping.includeSubdirs) "包含子目录" else "仅当前目录"} · ${if (mapping.onlyMedia) "仅照片和视频" else "全部文件"}",
+                text = "空间根目录 · $fileCount 个文件 · ${if (mapping.onlyMedia) "仅照片和视频" else "全部文件"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = OnSurfaceMuted,
-                modifier = Modifier.padding(top = 4.dp)
+                modifier = Modifier.padding(top = 6.dp)
             )
             Text(
                 text = "上次扫描：${formatIsoTime(mapping.lastScannedAt)} · ${if (mapping.lastScanComplete) "完整" else "未完成"}",
@@ -371,26 +448,12 @@ private fun FolderMappingCard(
                 color = if (mapping.lastScanComplete) OnSurfaceMuted else ErrorRed,
                 modifier = Modifier.padding(top = 3.dp)
             )
-            if (scanning && progress != null) {
-                Text(
-                    text = "已扫描 ${progress.scannedCount} 个文件 · ${progress.currentFileName.ifEmpty { "正在准备…" }}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = PrimaryBlue,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onRescan, enabled = !scanning) {
-                    Text(if (scanning) "扫描中…" else "重新扫描")
-                }
-                TextButton(onClick = onEdit) { Text("编辑") }
-                TextButton(onClick = onDelete) { Text("删除", color = ErrorRed) }
+                TextButton(onClick = onChangeDirectory) { Text("更改目录") }
             }
         }
     }
@@ -431,61 +494,6 @@ private fun MemberRow(member: SpaceMemberDto, thisDeviceId: String?) {
             )
         }
     }
-}
-
-@Composable
-private fun EditMappingDialog(
-    mapping: LocalFolderMapping,
-    siblings: List<LocalFolderMapping>,
-    onDismiss: () -> Unit,
-    onConfirm: (String, Boolean, Boolean) -> Unit
-) {
-    var prefix by rememberSaveable(mapping.id) { mutableStateOf(mapping.remotePrefix) }
-    var includeSubdirs by rememberSaveable(mapping.id) { mutableStateOf(mapping.includeSubdirs) }
-    var onlyMedia by rememberSaveable(mapping.id) { mutableStateOf(mapping.onlyMedia) }
-    val validation = RemotePrefix.validate(prefix)
-    val overlap = siblings.any {
-        it.id != mapping.id && RemotePrefix.overlaps(it.remotePrefix, validation.normalized)
-    }
-    val error = validation.error ?: if (overlap) "该路径与同空间的本机已有映射重叠" else null
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("编辑目录映射") },
-        text = {
-            Column {
-                Text(mapping.localPathLabel, color = OnSurfaceMuted)
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = prefix,
-                    onValueChange = { prefix = it },
-                    label = { Text("同步空间内路径") },
-                    singleLine = true,
-                    isError = error != null,
-                    supportingText = {
-                        Text(error ?: "远端预览：/${validation.normalized}（空路径表示空间根）")
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("包含子目录", modifier = Modifier.weight(1f))
-                    Switch(checked = includeSubdirs, onCheckedChange = { includeSubdirs = it })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("仅同步照片和视频", modifier = Modifier.weight(1f))
-                    Switch(checked = onlyMedia, onCheckedChange = { onlyMedia = it })
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(validation.normalized, includeSubdirs, onlyMedia) }, enabled = error == null) {
-                Text("保存", color = PrimaryBlue)
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
 }
 
 @Composable

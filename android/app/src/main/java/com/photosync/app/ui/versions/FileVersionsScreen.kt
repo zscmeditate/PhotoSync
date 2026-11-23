@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -53,7 +54,7 @@ fun FileVersionsScreen(fileId: String, onBack: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val latestVersion = state.versions.maxOfOrNull { it.version } ?: 0
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         SpacePageHeader(
             title = "历史版本",
             onBack = onBack,

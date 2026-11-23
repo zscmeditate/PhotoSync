@@ -19,7 +19,7 @@ import type {
   UploadedPartRecord,
   UploadSessionRecord,
 } from '../repositories/ports';
-import { normalizeRemotePrefix } from './space.service';
+import { normalizeRemotePath } from './space.service';
 
 export interface CreateUploadInput {
   spaceId: string;
@@ -83,7 +83,7 @@ export class TransferService {
     input: CreateUploadInput,
   ): Promise<{ upload: UploadDto; created: boolean }> {
     await this.requireSpaceDevice(userId, input.spaceId, input.deviceId);
-    const relativePath = normalizeRemotePrefix(input.relativePath);
+    const relativePath = normalizeRemotePath(input.relativePath);
     if (relativePath === '') {
       throw validationError('relativePath must not be empty');
     }

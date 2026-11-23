@@ -88,13 +88,16 @@ afterEach(async () => {
 });
 
 async function addDevice(userId: string, deviceName: string): Promise<DeviceRecord> {
-  return devices.create({
+  const device = await devices.create({
     userId,
     deviceName,
     platform: 'android',
     credentialStatus: 'active',
     lastSeenAt: new Date(),
   });
+  // 账号下第一台设备作为主设备（创建空间需要主设备身份）
+  await devices.claimPrimaryDevice(userId, device.id);
+  return device;
 }
 
 function sha256(content: Buffer): string {
@@ -262,6 +265,16 @@ describe('Phase 3 新增文件同步 HTTP 流程', () => {
       pendingEvents: 0,
       activeFileCount: 1,
     });
+
+    // 元数据在但对象已被存储层清理：返回可识别的 404，客户端据此跳过该事件并保留失败任务。
+    objectStore.objects.delete(upload.objectId);
+    const missingObject = await app.inject({
+      method: 'GET',
+      url: `/api/v1/objects/${upload.objectId}/download?deviceId=${deviceB.id}`,
+      headers: auth,
+    });
+    expect(missingObject.statusCode).toBe(404);
+    expect(errorCode(missingObject.json())).toBe('OBJECT_NOT_FOUND');
   });
 
   it('支持断点查询、分片与 complete 重放，并拒绝同分片不同内容', async () => {

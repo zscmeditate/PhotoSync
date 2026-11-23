@@ -11,11 +11,17 @@ export const ErrorCodes = {
   INVALID_REFRESH_TOKEN: 'INVALID_REFRESH_TOKEN',
   EMAIL_TAKEN: 'EMAIL_TAKEN',
   DEVICE_NOT_FOUND: 'DEVICE_NOT_FOUND',
+  DEVICE_NOT_PRIMARY: 'DEVICE_NOT_PRIMARY',
+  DEVICE_NOT_SELF: 'DEVICE_NOT_SELF',
+  PRIMARY_DEVICE_TAKEN: 'PRIMARY_DEVICE_TAKEN',
   SPACE_NOT_FOUND: 'SPACE_NOT_FOUND',
   SPACE_FORBIDDEN: 'SPACE_FORBIDDEN',
   NOT_MEMBER: 'NOT_MEMBER',
+  ALREADY_MEMBER: 'ALREADY_MEMBER',
+  JOIN_REQUEST_NOT_FOUND: 'JOIN_REQUEST_NOT_FOUND',
+  JOIN_REQUEST_RESOLVED: 'JOIN_REQUEST_RESOLVED',
   MAPPING_NOT_FOUND: 'MAPPING_NOT_FOUND',
-  MAPPING_OVERLAP: 'MAPPING_OVERLAP',
+  MAPPING_EXISTS: 'MAPPING_EXISTS',
   INVALID_DEVICE: 'INVALID_DEVICE',
   IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
   UPLOAD_NOT_FOUND: 'UPLOAD_NOT_FOUND',
@@ -82,6 +88,29 @@ export function deviceNotFound(): AppError {
   return new AppError(404, ErrorCodes.DEVICE_NOT_FOUND, 'Device not found');
 }
 
+/** 当前设备不是主设备，无权执行主设备专属操作 */
+export function deviceNotPrimary(): AppError {
+  return new AppError(
+    403,
+    ErrorCodes.DEVICE_NOT_PRIMARY,
+    'Only the primary device can perform this operation',
+  );
+}
+
+/** 只能操作本机设备（例如重命名），不能操作他人设备 */
+export function deviceNotSelf(): AppError {
+  return new AppError(403, ErrorCodes.DEVICE_NOT_SELF, 'Can only modify the current device');
+}
+
+/** 账号下已有其它主设备，不能再抢占 */
+export function primaryDeviceTaken(): AppError {
+  return new AppError(
+    409,
+    ErrorCodes.PRIMARY_DEVICE_TAKEN,
+    'Another device is already the primary device',
+  );
+}
+
 export function spaceNotFound(): AppError {
   return new AppError(404, ErrorCodes.SPACE_NOT_FOUND, 'Space not found');
 }
@@ -94,12 +123,32 @@ export function notMember(statusCode = 409): AppError {
   return new AppError(statusCode, ErrorCodes.NOT_MEMBER, 'Device is not a space member');
 }
 
+export function alreadyMember(): AppError {
+  return new AppError(409, ErrorCodes.ALREADY_MEMBER, 'Device is already a member of this space');
+}
+
+export function joinRequestNotFound(): AppError {
+  return new AppError(404, ErrorCodes.JOIN_REQUEST_NOT_FOUND, 'Join request not found');
+}
+
+export function joinRequestResolved(): AppError {
+  return new AppError(
+    409,
+    ErrorCodes.JOIN_REQUEST_RESOLVED,
+    'Join request has already been resolved',
+  );
+}
+
 export function mappingNotFound(): AppError {
   return new AppError(404, ErrorCodes.MAPPING_NOT_FOUND, 'Mapping not found');
 }
 
-export function mappingOverlap(): AppError {
-  return new AppError(409, ErrorCodes.MAPPING_OVERLAP, 'Remote prefix overlaps an existing mapping');
+export function mappingExists(): AppError {
+  return new AppError(
+    409,
+    ErrorCodes.MAPPING_EXISTS,
+    'This device already has a folder mapping in the space',
+  );
 }
 
 export function invalidDevice(): AppError {

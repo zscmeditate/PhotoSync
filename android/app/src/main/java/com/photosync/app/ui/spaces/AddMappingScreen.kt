@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -22,13 +23,13 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.SyncProblem
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
@@ -48,11 +50,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.repository.ScanPreview
-import com.photosync.app.data.sync.RemotePrefix
 import com.photosync.app.ui.components.ErrorBanner
 import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SecondaryButton
-import com.photosync.app.ui.components.appTextFieldColors
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
@@ -62,7 +62,8 @@ import com.photosync.app.ui.theme.WarningOrange
 @Composable
 fun AddMappingScreen(
     spaceId: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onFinished: () -> Unit = onBack
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as PhotoSyncApp
@@ -70,7 +71,6 @@ fun AddMappingScreen(
         AddMappingViewModel(app.container.spaceRepository, spaceId)
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val existingMappings by viewModel.existingMappings.collectAsStateWithLifecycle()
 
     val directoryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -93,14 +93,8 @@ fun AddMappingScreen(
         }
     }
 
-    val validation = RemotePrefix.validate(state.remotePrefix)
-    val overlaps = existingMappings.any { RemotePrefix.overlaps(it.remotePrefix, validation.normalized) }
-    val prefixError = state.prefixServerError
-        ?: validation.error
-        ?: if (overlaps) "该路径与同空间的本机已有映射重叠" else null
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        SpacePageHeader(title = "添加同步目录", onBack = onBack)
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        SpacePageHeader(title = "绑定本地目录", onBack = onBack)
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -113,8 +107,11 @@ fun AddMappingScreen(
             }
 
             when {
+                state.joinSubmitted -> {
+                    JoinPendingContent(onDone = onFinished)
+                }
                 state.preview != null -> {
-                    ScanPreviewContent(preview = state.preview!!, onDone = onBack)
+                    ScanPreviewContent(preview = state.preview!!, onDone = onFinished)
                 }
                 state.scanning -> {
                     Spacer(Modifier.height(48.dp))
@@ -151,14 +148,10 @@ fun AddMappingScreen(
                 else -> {
                     MappingForm(
                         state = state,
-                        prefixError = prefixError,
-                        normalizedPrefix = validation.normalized,
                         onSelectDirectory = { directoryLauncher.launch(null) },
-                        onPrefixChange = viewModel::updateRemotePrefix,
-                        onIncludeSubdirsChange = viewModel::updateIncludeSubdirs,
                         onOnlyMediaChange = viewModel::updateOnlyMedia,
                         onConfirm = viewModel::confirm,
-                        onDone = onBack
+                        onDone = onFinished
                     )
                 }
             }
@@ -170,17 +163,19 @@ fun AddMappingScreen(
 @Composable
 private fun MappingForm(
     state: AddMappingUiState,
-    prefixError: String?,
-    normalizedPrefix: String,
     onSelectDirectory: () -> Unit,
-    onPrefixChange: (String) -> Unit,
-    onIncludeSubdirsChange: (Boolean) -> Unit,
     onOnlyMediaChange: (Boolean) -> Unit,
     onConfirm: () -> Unit,
     onDone: () -> Unit
 ) {
     val alreadyCreated = state.createdMappingId != null
     Text("① 选择本地目录", style = MaterialTheme.typography.titleMedium)
+    Text(
+        text = "该目录会作为空间根目录，子文件夹和文件结构会完整同步到服务端。",
+        style = MaterialTheme.typography.bodySmall,
+        color = OnSurfaceMuted,
+        modifier = Modifier.padding(top = 6.dp)
+    )
     Spacer(Modifier.height(10.dp))
     OutlinedButton(
         onClick = onSelectDirectory,
@@ -216,43 +211,10 @@ private fun MappingForm(
         }
     }
 
-    Spacer(Modifier.height(24.dp))
-    Text("② 设置同步空间内路径", style = MaterialTheme.typography.titleMedium)
-    Spacer(Modifier.height(10.dp))
-    OutlinedTextField(
-        value = state.remotePrefix,
-        onValueChange = onPrefixChange,
-        label = { Text("远端映射前缀") },
-        placeholder = { Text("Camera（留空表示空间根）") },
-        singleLine = true,
-        enabled = !state.creating && !alreadyCreated,
-        isError = prefixError != null,
-        supportingText = {
-            Text(prefixError ?: "规范化预览：/${normalizedPrefix}；远端文件路径会自动包含此前缀")
-        },
-        shape = RoundedCornerShape(12.dp),
-        colors = appTextFieldColors(),
-        modifier = Modifier.fillMaxWidth()
-    )
-
     Spacer(Modifier.height(20.dp))
-    Text("③ 扫描范围", style = MaterialTheme.typography.titleMedium)
+    Text("② 同步选项", style = MaterialTheme.typography.titleMedium)
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text("包含子目录")
-            Text("递归扫描所选目录下的全部层级", style = MaterialTheme.typography.bodySmall, color = OnSurfaceMuted)
-        }
-        Switch(
-            checked = state.includeSubdirs,
-            onCheckedChange = onIncludeSubdirsChange,
-            enabled = !state.creating && !alreadyCreated
-        )
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -267,18 +229,43 @@ private fun MappingForm(
     }
 
     Spacer(Modifier.height(24.dp))
-    Text("④ 确认并建立索引", style = MaterialTheme.typography.titleMedium)
+    Text("③ 确认并建立索引", style = MaterialTheme.typography.titleMedium)
     Spacer(Modifier.height(10.dp))
     PrimaryButton(
-        text = if (state.creating) "正在添加映射…" else "确认添加并扫描",
+        text = if (state.creating) "正在绑定目录…" else "确认绑定并扫描",
         onClick = onConfirm,
-        enabled = !state.creating && !alreadyCreated && state.treeUri != null && prefixError == null,
+        enabled = !state.creating && !alreadyCreated && state.treeUri != null,
         leadingIcon = Icons.Filled.Add
     )
     if (alreadyCreated) {
         Spacer(Modifier.height(12.dp))
         SecondaryButton(text = "返回空间详情", onClick = onDone)
     }
+}
+
+@Composable
+private fun ColumnScope.JoinPendingContent(onDone: () -> Unit) {
+    Spacer(Modifier.height(12.dp))
+    Icon(
+        imageVector = Icons.Filled.HourglassEmpty,
+        contentDescription = null,
+        tint = PrimaryBlue,
+        modifier = Modifier.size(56.dp).align(Alignment.CenterHorizontally)
+    )
+    Text(
+        text = "已提交加入申请",
+        style = MaterialTheme.typography.headlineMedium,
+        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 12.dp)
+    )
+    Text(
+        text = "主设备同意后将自动用刚才选择的目录完成绑定并开始同步。",
+        style = MaterialTheme.typography.bodyMedium,
+        color = OnSurfaceMuted,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+    )
+    Spacer(Modifier.height(24.dp))
+    PrimaryButton(text = "返回空间详情", onClick = onDone, leadingIcon = Icons.Filled.CheckCircle)
 }
 
 @Composable

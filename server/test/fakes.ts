@@ -13,7 +13,7 @@ import {
   validationError,
   versionConflict,
 } from '../src/lib/errors';
-import type { ObjectContent, ObjectStore } from '../src/lib/object-store';
+import { StorageObjectMissingError, type ObjectContent, type ObjectStore } from '../src/lib/object-store';
 import type {
   DeviceRecord,
   DeviceRepository,
@@ -22,6 +22,9 @@ import type {
   MappingUpdateData,
   RefreshTokenRecord,
   RefreshTokenRepository,
+  JoinRequestStatusValue,
+  SpaceJoinRequestRecord,
+  SpaceJoinRequestWithDeviceRecord,
   SpaceMemberRecord,
   SpaceMemberWithDeviceRecord,
   SpaceRepository,
@@ -102,14 +105,37 @@ export class FakeUserRepository implements UserRepository {
 
 export class FakeDeviceRepository implements DeviceRepository {
   readonly items = new Map<string, DeviceRecord>();
+  private readonly primaryByUser = new Map<string, string>();
 
   async findById(id: string): Promise<DeviceRecord | null> {
     return this.items.get(id) ?? null;
   }
 
+  async findPrimaryDeviceId(userId: string): Promise<string | null> {
+    return this.primaryByUser.get(userId) ?? null;
+  }
+
+  async claimPrimaryDevice(userId: string, deviceId: string): Promise<boolean> {
+    const current = this.primaryByUser.get(userId);
+    if (current !== undefined && current !== deviceId) {
+      return false;
+    }
+    this.primaryByUser.set(userId, deviceId);
+    return true;
+  }
+
+  async clearPrimaryDevice(userId: string, deviceId: string): Promise<boolean> {
+    if (this.primaryByUser.get(userId) !== deviceId) {
+      return false;
+    }
+    this.primaryByUser.delete(userId);
+    return true;
+  }
+
   async listByUser(userId: string): Promise<DeviceRecord[]> {
     return [...this.items.values()]
-      .filter((device) => device.userId === userId)
+      // 已退出登录的设备不出现在列表中
+      .filter((device) => device.userId === userId && device.loggedOutAt === null)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
@@ -127,6 +153,8 @@ export class FakeDeviceRepository implements DeviceRepository {
       platform: data.platform,
       credentialStatus: data.credentialStatus,
       lastSeenAt: data.lastSeenAt,
+      rejoinRequestedAt: null,
+      loggedOutAt: null,
       createdAt: new Date(),
     };
     this.items.set(record.id, record);
@@ -135,7 +163,13 @@ export class FakeDeviceRepository implements DeviceRepository {
 
   async update(
     id: string,
-    data: { deviceName?: string; credentialStatus?: DeviceRecord['credentialStatus']; lastSeenAt?: Date },
+    data: {
+      deviceName?: string;
+      credentialStatus?: DeviceRecord['credentialStatus'];
+      lastSeenAt?: Date;
+      rejoinRequestedAt?: Date | null;
+      loggedOutAt?: Date | null;
+    },
   ): Promise<DeviceRecord> {
     const existing = this.items.get(id);
     if (!existing) {
@@ -203,6 +237,7 @@ export class FakeSpaceRepository implements SpaceRepository {
   >();
   readonly mappings = new Map<string, FolderMappingRecord>();
   readonly files = new Map<string, FakeSyncFileRecord>();
+  readonly joinRequests = new Map<string, SpaceJoinRequestRecord>();
 
   constructor(private readonly devices: FakeDeviceRepository) {}
 
@@ -297,6 +332,9 @@ export class FakeSpaceRepository implements SpaceRepository {
     for (const [key, mapping] of this.mappings) {
       if (mapping.spaceId === spaceId) this.mappings.delete(key);
     }
+    for (const [key, request] of this.joinRequests) {
+      if (request.spaceId === spaceId) this.joinRequests.delete(key);
+    }
   }
 
   async listMembershipsForDevices(
@@ -344,7 +382,101 @@ export class FakeSpaceRepository implements SpaceRepository {
   }
 
   async removeMember(spaceId: string, deviceId: string): Promise<void> {
-    this.members.delete(this.key(spaceId, deviceId));
+    const key = this.key(spaceId, deviceId);
+    this.members.delete(key);
+    this.cursors.delete(key);
+    for (const [id, mapping] of this.mappings) {
+      if (mapping.spaceId === spaceId && mapping.deviceId === deviceId) {
+        this.mappings.delete(id);
+      }
+    }
+  }
+
+  async clearDeviceBindings(deviceId: string): Promise<void> {
+    for (const [key, member] of this.members) {
+      if (member.deviceId === deviceId) {
+        this.members.delete(key);
+      }
+    }
+    for (const [key, cursor] of this.cursors) {
+      if (cursor.deviceId === deviceId) {
+        this.cursors.delete(key);
+      }
+    }
+    for (const [key, mapping] of this.mappings) {
+      if (mapping.deviceId === deviceId) {
+        this.mappings.delete(key);
+      }
+    }
+    for (const [key, request] of this.joinRequests) {
+      if (request.deviceId === deviceId) {
+        this.joinRequests.delete(key);
+      }
+    }
+  }
+
+  private withJoinDevice(request: SpaceJoinRequestRecord): SpaceJoinRequestWithDeviceRecord {
+    const device = this.devices.items.get(request.deviceId);
+    if (!device) {
+      throw new Error(`device ${request.deviceId} not found`);
+    }
+    return { ...request, device };
+  }
+
+  async findPendingJoinRequest(
+    spaceId: string,
+    deviceId: string,
+  ): Promise<SpaceJoinRequestWithDeviceRecord | null> {
+    const request = [...this.joinRequests.values()].find(
+      (item) =>
+        item.spaceId === spaceId && item.deviceId === deviceId && item.status === 'pending',
+    );
+    return request ? this.withJoinDevice(request) : null;
+  }
+
+  async createJoinRequest(data: {
+    spaceId: string;
+    deviceId: string;
+    status?: JoinRequestStatusValue;
+    resolvedAt?: Date | null;
+  }): Promise<SpaceJoinRequestWithDeviceRecord> {
+    const request: SpaceJoinRequestRecord = {
+      id: randomUUID(),
+      spaceId: data.spaceId,
+      deviceId: data.deviceId,
+      status: data.status ?? 'pending',
+      createdAt: new Date(),
+      resolvedAt: data.resolvedAt ?? null,
+    };
+    this.joinRequests.set(request.id, request);
+    return this.withJoinDevice(request);
+  }
+
+  async listPendingJoinRequests(spaceId: string): Promise<SpaceJoinRequestWithDeviceRecord[]> {
+    return [...this.joinRequests.values()]
+      .filter((request) => request.spaceId === spaceId && request.status === 'pending')
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .map((request) => this.withJoinDevice(request));
+  }
+
+  async findJoinRequestById(
+    requestId: string,
+  ): Promise<SpaceJoinRequestWithDeviceRecord | null> {
+    const request = this.joinRequests.get(requestId);
+    return request ? this.withJoinDevice(request) : null;
+  }
+
+  async updateJoinRequest(
+    requestId: string,
+    data: { status: JoinRequestStatusValue; resolvedAt: Date | null },
+  ): Promise<SpaceJoinRequestWithDeviceRecord> {
+    const request = this.joinRequests.get(requestId);
+    if (!request) {
+      throw new Error(`join request ${requestId} not found`);
+    }
+    const updated: SpaceJoinRequestRecord = { ...request, ...data };
+    this.joinRequests.set(requestId, updated);
+    return this.withJoinDevice(updated);
   }
 
   async listMappings(spaceId: string, deviceId?: string): Promise<FolderMappingRecord[]> {
@@ -528,9 +660,7 @@ export class FakeObjectStore implements ObjectStore {
   async getObject(objectId: string): Promise<ObjectContent> {
     const object = this.objects.get(objectId);
     if (!object) {
-      const error = new Error('NoSuchKey');
-      error.name = 'NoSuchKey';
-      throw error;
+      throw new StorageObjectMissingError(objectId);
     }
     return { body: Readable.from([object]), contentLength: object.byteLength };
   }

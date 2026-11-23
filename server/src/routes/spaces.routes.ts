@@ -1,13 +1,19 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authUserId, requireAuth } from '../lib/auth';
-import { mappingNotFound, notMember, spaceNotFound } from '../lib/errors';
+import {
+  joinRequestNotFound,
+  mappingNotFound,
+  notMember,
+  spaceNotFound,
+} from '../lib/errors';
 import type { JwtService } from '../lib/jwt';
 import { parse } from '../lib/validation';
 import type { SpaceService } from '../services/space.service';
 import {
   bearerSecurity,
   errorResponses,
+  joinRequestSchema,
   mappingSchema,
   memberSchema,
   spaceSchema,
@@ -39,11 +45,12 @@ const updateSpaceBodySchema = z
 
 const memberBodySchema = z.object({ deviceId: uuidSchema });
 
+const joinRequestQuerySchema = z.object({ deviceId: uuidSchema });
+const joinRequestParamsSchema = z.object({ requestId: uuidSchema });
+
 const createMappingBodySchema = z.object({
   deviceId: uuidSchema,
   localPathLabel: z.string().trim().min(1).max(256),
-  remotePrefix: z.string(),
-  includeSubdirs: z.boolean().optional().default(true),
   onlyMedia: z.boolean().optional().default(false),
 });
 
@@ -110,6 +117,41 @@ const memberObjectSchema = {
   additionalProperties: true,
   properties: { member: memberSchema },
 } as const;
+
+const joinRequestParams = {
+  type: 'object',
+  required: ['requestId'],
+  properties: { requestId: { type: 'string', description: '加入申请 UUID' } },
+} as const;
+
+const joinRequestObjectSchema = {
+  type: 'object',
+  required: ['request'],
+  additionalProperties: true,
+  properties: { request: joinRequestSchema },
+} as const;
+
+const joinRequestSubmitSchema = {
+  type: 'object',
+  required: ['request', 'joined'],
+  additionalProperties: true,
+  properties: { request: joinRequestSchema, joined: { type: 'boolean' } },
+} as const;
+
+const joinRequestListSchema = {
+  type: 'object',
+  required: ['requests'],
+  additionalProperties: true,
+  properties: { requests: { type: 'array', items: joinRequestSchema } },
+} as const;
+
+function parseJoinRequestId(params: unknown): string {
+  const result = joinRequestParamsSchema.safeParse(params);
+  if (!result.success) {
+    throw joinRequestNotFound();
+  }
+  return result.data.requestId;
+}
 
 const mappingObjectSchema = {
   type: 'object',
@@ -390,6 +432,160 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
   );
 
   app.post(
+    '/spaces/:spaceId/join-requests',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['spaces'],
+        summary: '申请加入空间（主设备无需审批）',
+        security: bearerSecurity,
+        params: spaceParams,
+        body: {
+          type: 'object',
+          required: ['deviceId'],
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
+        response: {
+          201: joinRequestSubmitSchema,
+          400: errorResponses[400],
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          409: errorResponses[409],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest, reply) => {
+      const spaceId = parseSpaceId(request.params);
+      const body = parse(memberBodySchema, request.body);
+      const result = await spaceService.requestToJoinSpace(
+        authUserId(request),
+        spaceId,
+        body.deviceId,
+      );
+      return reply.status(201).send(result);
+    },
+  );
+
+  app.get(
+    '/spaces/:spaceId/join-requests',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['spaces'],
+        summary: '主设备查看待审批的加入申请',
+        security: bearerSecurity,
+        params: spaceParams,
+        querystring: {
+          type: 'object',
+          required: ['deviceId'],
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
+        response: {
+          200: joinRequestListSchema,
+          400: errorResponses[400],
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const spaceId = parseSpaceId(request.params);
+      const query = parse(joinRequestQuerySchema, request.query);
+      return {
+        requests: await spaceService.listJoinRequests(
+          authUserId(request),
+          spaceId,
+          query.deviceId,
+        ),
+      };
+    },
+  );
+
+  app.post(
+    '/join-requests/:requestId/approve',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['spaces'],
+        summary: '主设备同意加入申请',
+        security: bearerSecurity,
+        params: joinRequestParams,
+        body: {
+          type: 'object',
+          required: ['deviceId'],
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
+        response: {
+          200: joinRequestObjectSchema,
+          400: errorResponses[400],
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          409: errorResponses[409],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const requestId = parseJoinRequestId(request.params);
+      const body = parse(memberBodySchema, request.body);
+      const joinRequest = await spaceService.resolveJoinRequest(
+        authUserId(request),
+        requestId,
+        body.deviceId,
+        true,
+      );
+      return { request: joinRequest };
+    },
+  );
+
+  app.post(
+    '/join-requests/:requestId/reject',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['spaces'],
+        summary: '主设备拒绝加入申请',
+        security: bearerSecurity,
+        params: joinRequestParams,
+        body: {
+          type: 'object',
+          required: ['deviceId'],
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
+        response: {
+          200: joinRequestObjectSchema,
+          400: errorResponses[400],
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          409: errorResponses[409],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const requestId = parseJoinRequestId(request.params);
+      const body = parse(memberBodySchema, request.body);
+      const joinRequest = await spaceService.resolveJoinRequest(
+        authUserId(request),
+        requestId,
+        body.deviceId,
+        false,
+      );
+      return { request: joinRequest };
+    },
+  );
+
+  app.post(
     '/spaces/:spaceId/mappings',
     {
       preHandler: auth,
@@ -400,13 +596,11 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
         params: spaceParams,
         body: {
           type: 'object',
-          required: ['deviceId', 'localPathLabel', 'remotePrefix'],
+          required: ['deviceId', 'localPathLabel'],
           additionalProperties: false,
           properties: {
             deviceId: { type: 'string' },
             localPathLabel: { type: 'string', minLength: 1, maxLength: 256 },
-            remotePrefix: { type: 'string' },
-            includeSubdirs: { type: 'boolean', default: true },
             onlyMedia: { type: 'boolean', default: false },
           },
         },

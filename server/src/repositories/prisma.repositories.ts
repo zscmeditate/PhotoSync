@@ -1,12 +1,14 @@
 import {
   Prisma,
   type CredentialStatus,
+  type Device as PrismaDevice,
   type DevicePlatform,
   type FileVersion as PrismaFileVersion,
   type PrismaClient,
   type SyncConflict as PrismaSyncConflict,
   type SyncEvent as PrismaSyncEvent,
   type SyncEventType,
+  type SpaceJoinRequest as PrismaSpaceJoinRequest,
   type SyncFile as PrismaSyncFile,
   type TrashItem as PrismaTrashItem,
   type UploadSession as PrismaUploadSession,
@@ -21,6 +23,8 @@ import type {
   MappingUpdateData,
   RefreshTokenRecord,
   RefreshTokenRepository,
+  JoinRequestStatusValue,
+  SpaceJoinRequestWithDeviceRecord,
   SpaceMemberRecord,
   SpaceMemberWithDeviceRecord,
   SpaceRepository,
@@ -84,6 +88,11 @@ import {
  * 仓储接口（ports.ts）供服务层依赖注入与测试替身使用。
  */
 
+/** 同步事件 payload 为普通对象，显式转为 Prisma Json 输入类型。 */
+function asEventPayload(payload: SyncEventPayload): Prisma.InputJsonValue {
+  return payload as unknown as Prisma.InputJsonValue;
+}
+
 export class PrismaUserRepository implements UserRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -112,8 +121,9 @@ export class PrismaDeviceRepository implements DeviceRepository {
   }
 
   async listByUser(userId: string): Promise<DeviceRecord[]> {
+    // 已主动退出登录的设备不再出现在列表中
     return this.prisma.device.findMany({
-      where: { userId },
+      where: { userId, loggedOutAt: null },
       orderBy: { createdAt: 'asc' },
     });
   }
@@ -138,7 +148,13 @@ export class PrismaDeviceRepository implements DeviceRepository {
 
   async update(
     id: string,
-    data: { deviceName?: string; credentialStatus?: CredentialStatusValue; lastSeenAt?: Date },
+    data: {
+      deviceName?: string;
+      credentialStatus?: CredentialStatusValue;
+      lastSeenAt?: Date;
+      rejoinRequestedAt?: Date | null;
+      loggedOutAt?: Date | null;
+    },
   ): Promise<DeviceRecord> {
     return this.prisma.device.update({
       where: { id },
@@ -148,8 +164,37 @@ export class PrismaDeviceRepository implements DeviceRepository {
           ? { credentialStatus: data.credentialStatus as CredentialStatus }
           : {}),
         ...(data.lastSeenAt !== undefined ? { lastSeenAt: data.lastSeenAt } : {}),
+        ...(data.rejoinRequestedAt !== undefined
+          ? { rejoinRequestedAt: data.rejoinRequestedAt }
+          : {}),
+        ...(data.loggedOutAt !== undefined ? { loggedOutAt: data.loggedOutAt } : {}),
       },
     });
+  }
+
+  async findPrimaryDeviceId(userId: string): Promise<string | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { primaryDeviceId: true },
+    });
+    return user?.primaryDeviceId ?? null;
+  }
+
+  async claimPrimaryDevice(userId: string, deviceId: string): Promise<boolean> {
+    // 条件更新保证并发下最多只有一台设备成为主设备。
+    const result = await this.prisma.user.updateMany({
+      where: { id: userId, OR: [{ primaryDeviceId: null }, { primaryDeviceId: deviceId }] },
+      data: { primaryDeviceId: deviceId },
+    });
+    return result.count > 0;
+  }
+
+  async clearPrimaryDevice(userId: string, deviceId: string): Promise<boolean> {
+    const result = await this.prisma.user.updateMany({
+      where: { id: userId, primaryDeviceId: deviceId },
+      data: { primaryDeviceId: null },
+    });
+    return result.count > 0;
   }
 }
 
@@ -310,7 +355,94 @@ export class PrismaSpaceRepository implements SpaceRepository {
   }
 
   async removeMember(spaceId: string, deviceId: string): Promise<void> {
-    await this.prisma.spaceMember.deleteMany({ where: { spaceId, deviceId } });
+    // 退出空间即解除该设备在此空间的目录绑定与同步游标，重新加入时需重新绑定目录。
+    await this.prisma.$transaction([
+      this.prisma.spaceMember.deleteMany({ where: { spaceId, deviceId } }),
+      this.prisma.folderMapping.deleteMany({ where: { spaceId, deviceId } }),
+      this.prisma.syncCursor.deleteMany({ where: { spaceId, deviceId } }),
+    ]);
+  }
+
+  async clearDeviceBindings(deviceId: string): Promise<void> {
+    await this.prisma.$transaction([
+      this.prisma.spaceMember.deleteMany({ where: { deviceId } }),
+      this.prisma.folderMapping.deleteMany({ where: { deviceId } }),
+      this.prisma.syncCursor.deleteMany({ where: { deviceId } }),
+      this.prisma.spaceJoinRequest.deleteMany({ where: { deviceId } }),
+    ]);
+  }
+
+  private toJoinRequest(
+    row: PrismaSpaceJoinRequest & { device: PrismaDevice },
+  ): SpaceJoinRequestWithDeviceRecord {
+    return {
+      id: row.id,
+      spaceId: row.spaceId,
+      deviceId: row.deviceId,
+      status: row.status as JoinRequestStatusValue,
+      createdAt: row.createdAt,
+      resolvedAt: row.resolvedAt,
+      device: row.device,
+    };
+  }
+
+  async findPendingJoinRequest(
+    spaceId: string,
+    deviceId: string,
+  ): Promise<SpaceJoinRequestWithDeviceRecord | null> {
+    const row = await this.prisma.spaceJoinRequest.findFirst({
+      where: { spaceId, deviceId, status: 'pending' },
+      orderBy: { createdAt: 'desc' },
+      include: { device: true },
+    });
+    return row ? this.toJoinRequest(row) : null;
+  }
+
+  async createJoinRequest(data: {
+    spaceId: string;
+    deviceId: string;
+    status?: JoinRequestStatusValue;
+    resolvedAt?: Date | null;
+  }): Promise<SpaceJoinRequestWithDeviceRecord> {
+    const row = await this.prisma.spaceJoinRequest.create({
+      data: {
+        spaceId: data.spaceId,
+        deviceId: data.deviceId,
+        status: data.status ?? 'pending',
+        ...(data.resolvedAt !== undefined ? { resolvedAt: data.resolvedAt } : {}),
+      },
+      include: { device: true },
+    });
+    return this.toJoinRequest(row);
+  }
+
+  async listPendingJoinRequests(spaceId: string): Promise<SpaceJoinRequestWithDeviceRecord[]> {
+    const rows = await this.prisma.spaceJoinRequest.findMany({
+      where: { spaceId, status: 'pending' },
+      include: { device: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return rows.map((row) => this.toJoinRequest(row));
+  }
+
+  async findJoinRequestById(requestId: string): Promise<SpaceJoinRequestWithDeviceRecord | null> {
+    const row = await this.prisma.spaceJoinRequest.findUnique({
+      where: { id: requestId },
+      include: { device: true },
+    });
+    return row ? this.toJoinRequest(row) : null;
+  }
+
+  async updateJoinRequest(
+    requestId: string,
+    data: { status: JoinRequestStatusValue; resolvedAt: Date | null },
+  ): Promise<SpaceJoinRequestWithDeviceRecord> {
+    const row = await this.prisma.spaceJoinRequest.update({
+      where: { id: requestId },
+      data: { status: data.status, resolvedAt: data.resolvedAt },
+      include: { device: true },
+    });
+    return this.toJoinRequest(row);
   }
 
   async listMappings(spaceId: string, deviceId?: string): Promise<FolderMappingRecord[]> {
@@ -336,8 +468,6 @@ export class PrismaSpaceRepository implements SpaceRepository {
       where: { id: mappingId },
       data: {
         ...(data.localPathLabel !== undefined ? { localPathLabel: data.localPathLabel } : {}),
-        ...(data.remotePrefix !== undefined ? { remotePrefix: data.remotePrefix } : {}),
-        ...(data.includeSubdirs !== undefined ? { includeSubdirs: data.includeSubdirs } : {}),
         ...(data.filters !== undefined ? { filters: data.filters } : {}),
       },
     });
@@ -637,7 +767,7 @@ export class PrismaSyncRepository implements SyncRepository {
               spaceId: data.spaceId,
               revision: space.revision,
               type: 'file_created',
-              payload,
+              payload: asEventPayload(payload),
               deviceId: data.deviceId,
               operationId: data.operationId,
             },
@@ -758,7 +888,7 @@ export class PrismaSyncRepository implements SyncRepository {
               spaceId: data.spaceId,
               revision: space.revision,
               type: 'file_updated',
-              payload,
+              payload: asEventPayload(payload),
               deviceId: data.deviceId,
               operationId: data.operationId,
             },
@@ -857,7 +987,7 @@ export class PrismaSyncRepository implements SyncRepository {
               spaceId: data.spaceId,
               revision: space.revision,
               type: 'file_deleted',
-              payload,
+              payload: asEventPayload(payload),
               deviceId: data.deviceId,
               operationId: data.operationId,
             },
@@ -960,7 +1090,7 @@ export class PrismaSyncRepository implements SyncRepository {
               spaceId: data.spaceId,
               revision: space.revision,
               type: 'file_renamed',
-              payload,
+              payload: asEventPayload(payload),
               deviceId: data.deviceId,
               operationId: data.operationId,
             },
@@ -1317,7 +1447,7 @@ export class PrismaSyncRepository implements SyncRepository {
             spaceId: conflict.spaceId,
             revision: space.revision,
             type: eventType,
-            payload,
+            payload: asEventPayload(payload),
             deviceId: data.deviceId,
             operationId: data.operationId,
           },
@@ -1433,7 +1563,7 @@ export class PrismaSyncRepository implements SyncRepository {
             spaceId: item.spaceId,
             revision: space.revision,
             type: 'file_restored',
-            payload,
+            payload: asEventPayload(payload),
             deviceId,
             operationId,
           },

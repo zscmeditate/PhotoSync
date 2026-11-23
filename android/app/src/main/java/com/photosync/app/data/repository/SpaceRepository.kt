@@ -7,9 +7,13 @@ import com.photosync.app.data.local.LocalSpace
 import com.photosync.app.data.local.MappingFileCount
 import com.photosync.app.data.local.MappingStatus
 import com.photosync.app.data.local.SyncDatabase
+import com.photosync.app.data.prefs.PendingBinding
+import com.photosync.app.data.prefs.PendingBindingStore
 import com.photosync.app.data.prefs.SecureTokenStore
 import com.photosync.app.data.remote.ApiClient
 import com.photosync.app.data.remote.ApiResult
+import com.photosync.app.data.remote.JoinRequestDto
+import com.photosync.app.data.remote.JoinRequestSubmitResponse
 import com.photosync.app.data.remote.MappingCreateRequest
 import com.photosync.app.data.remote.MappingDto
 import com.photosync.app.data.remote.MappingUpdateRequest
@@ -25,10 +29,10 @@ import com.photosync.app.data.remote.apiCall
 import com.photosync.app.data.sync.FolderAccessException
 import com.photosync.app.data.sync.FolderScanProgress
 import com.photosync.app.data.sync.FolderScanner
-import com.photosync.app.data.sync.RemotePrefix
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.time.Instant
 
@@ -38,12 +42,19 @@ data class ScanPreview(
     val truncated: Boolean
 )
 
+/** 「绑定目录」的结果：已是成员则直接建立映射，否则先提交加入申请并暂存目录。 */
+sealed interface BindOutcome {
+    data class Bound(val mapping: LocalFolderMapping) : BindOutcome
+    data object JoinPending : BindOutcome
+}
+
 /** 同步空间、成员、目录映射和本地扫描的统一入口。 */
 class SpaceRepository(
     private val apiClient: ApiClient,
     private val tokenStore: SecureTokenStore,
     private val database: SyncDatabase,
-    private val folderScanner: FolderScanner
+    private val folderScanner: FolderScanner,
+    private val pendingBindingStore: PendingBindingStore
 ) {
     private val spaceDao = database.localSpaceDao()
     private val mappingDao = database.localFolderMappingDao()
@@ -71,6 +82,16 @@ class SpaceRepository(
     fun currentDeviceId(): String? = tokenStore.currentDeviceId()
 
     suspend fun getSpace(spaceId: String): LocalSpace? = spaceDao.getById(spaceId)
+
+    suspend fun getAllSpaces(): List<LocalSpace> = spaceDao.getAll()
+
+    /** 只读查询某台设备在空间内是否已有目录映射，用于「加入空间」时过滤已加入的空间。 */
+    suspend fun hasDeviceMapping(spaceId: String, deviceId: String): ApiResult<Boolean> {
+        return when (val result = apiCall { apiClient.api.getMappings(spaceId, deviceId) }) {
+            is ApiResult.Success -> ApiResult.Success(result.data.mappings.isNotEmpty())
+            is ApiResult.Failure -> result
+        }
+    }
 
     suspend fun refreshSpaces(): ApiResult<Unit> {
         return when (val result = apiCall { apiClient.api.getSpaces() }) {
@@ -188,22 +209,59 @@ class SpaceRepository(
         }
     }
 
+    /** 从本机申请加入空间；主设备申请时服务端直接通过。 */
+    suspend fun requestJoinSpace(spaceId: String): ApiResult<JoinRequestSubmitResponse> {
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        return when (
+            val result = apiCall {
+                apiClient.api.requestJoinSpace(spaceId, MemberAddRequest(deviceId))
+            }
+        ) {
+            is ApiResult.Success -> ApiResult.Success(result.data)
+            is ApiResult.Failure -> result
+        }
+    }
+
+    /** 主设备读取待审批的加入申请。 */
+    suspend fun loadJoinRequests(spaceId: String): ApiResult<List<JoinRequestDto>> {
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        return when (val result = apiCall { apiClient.api.getJoinRequests(spaceId, deviceId) }) {
+            is ApiResult.Success -> ApiResult.Success(result.data.requests)
+            is ApiResult.Failure -> result
+        }
+    }
+
+    /** 主设备同意或拒绝一条加入申请。 */
+    suspend fun resolveJoinRequest(requestId: String, approve: Boolean): ApiResult<JoinRequestDto> {
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        return when (
+            val result = apiCall {
+                if (approve) {
+                    apiClient.api.approveJoinRequest(requestId, MemberAddRequest(deviceId))
+                } else {
+                    apiClient.api.rejectJoinRequest(requestId, MemberAddRequest(deviceId))
+                }
+            }
+        ) {
+            is ApiResult.Success -> ApiResult.Success(result.data.request)
+            is ApiResult.Failure -> result
+        }
+    }
+
     suspend fun createMapping(
         spaceId: String,
         localPathLabel: String,
         treeUri: String,
-        remotePrefix: String,
-        includeSubdirs: Boolean,
         onlyMedia: Boolean
     ): ApiResult<LocalFolderMapping> {
         val deviceId = currentDeviceId()
             ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
-        val validation = RemotePrefix.validate(remotePrefix)
-        validation.error?.let { return ApiResult.Failure("VALIDATION_ERROR", it) }
-        val normalized = validation.normalized
         val existing = mappingDao.getBySpaceAndDevice(spaceId, deviceId)
-        if (existing.any { RemotePrefix.overlaps(it.remotePrefix, normalized) }) {
-            return ApiResult.Failure("MAPPING_OVERLAP", "该路径与同空间的本机已有映射重叠")
+        if (existing.isNotEmpty()) {
+            return ApiResult.Failure("MAPPING_EXISTS", "该空间已绑定本地目录，请先删除原目录映射")
         }
 
         val membership = ensureCurrentDeviceIsMember(spaceId, deviceId)
@@ -216,8 +274,6 @@ class SpaceRepository(
                     MappingCreateRequest(
                         deviceId = deviceId,
                         localPathLabel = localPathLabel,
-                        remotePrefix = normalized,
-                        includeSubdirs = includeSubdirs,
                         onlyMedia = onlyMedia
                     )
                 )
@@ -243,55 +299,130 @@ class SpaceRepository(
         }
         spaceDao.upsertAll(listOf(detail.space.toLocal(spaceDao.getById(spaceId))))
         if (detail.members.any { it.deviceId == deviceId }) return ApiResult.Success(Unit)
-        return addMember(spaceId, deviceId)
+        // 绑定目录不能自动成为成员：必须由主设备同意加入申请。
+        return ApiResult.Failure(
+            "NOT_MEMBER",
+            "本机尚未加入该空间，请先在「加入空间」中提交申请并等待主设备同意"
+        )
     }
 
-    suspend fun updateMapping(
-        mapping: LocalFolderMapping,
-        remotePrefix: String,
-        includeSubdirs: Boolean,
+    /** 本机在该空间是否有「已选目录、等待主设备同意」的暂存绑定。 */
+    fun observePendingBinding(spaceId: String): Flow<Boolean> =
+        pendingBindingStore.observe(spaceId).map { it != null }
+
+    /**
+     * 绑定目录与申请加入合并为一个动作：
+     * 已是成员则直接建立映射；不是成员则提交加入申请并暂存本地目录，等待主设备同意。
+     */
+    suspend fun bindDirectory(
+        spaceId: String,
+        localPathLabel: String,
+        treeUri: String,
         onlyMedia: Boolean
-    ): ApiResult<Unit> {
-        val validation = RemotePrefix.validate(remotePrefix)
-        validation.error?.let { return ApiResult.Failure("VALIDATION_ERROR", it) }
-        val normalized = validation.normalized
-        val siblings = mappingDao.getBySpaceAndDevice(mapping.spaceId, mapping.deviceId)
-        if (siblings.any { it.id != mapping.id && RemotePrefix.overlaps(it.remotePrefix, normalized) }) {
-            return ApiResult.Failure("MAPPING_OVERLAP", "该路径与同空间的本机已有映射重叠")
+    ): ApiResult<BindOutcome> {
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        if (mappingDao.getBySpaceAndDevice(spaceId, deviceId).isNotEmpty()) {
+            return ApiResult.Failure("MAPPING_EXISTS", "该空间已绑定本地目录")
         }
 
-        return when (
-            val result = apiCall {
-                apiClient.api.updateMapping(
-                    mapping.id,
-                    MappingUpdateRequest(
-                        localPathLabel = mapping.localPathLabel,
-                        remotePrefix = normalized,
-                        includeSubdirs = includeSubdirs,
-                        onlyMedia = onlyMedia
-                    )
-                )
+        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId) }) {
+            is ApiResult.Success -> result.data
+            is ApiResult.Failure -> return result
+        }
+        spaceDao.upsertAll(listOf(detail.space.toLocal(spaceDao.getById(spaceId))))
+        var member = detail.members.any { it.deviceId == deviceId }
+        if (!member) {
+            when (val join = requestJoinSpace(spaceId)) {
+                is ApiResult.Failure -> {
+                    if (join.code != "ALREADY_MEMBER") return join
+                    member = true
+                }
+                is ApiResult.Success -> member = join.data.joined
             }
-        ) {
-            is ApiResult.Success -> {
-                mappingDao.upsert(
-                    result.data.mapping.toLocal(mapping).copy(treeUri = mapping.treeUri)
+        }
+        if (!member) {
+            pendingBindingStore.save(
+                PendingBinding(
+                    spaceId = spaceId,
+                    treeUri = treeUri,
+                    localPathLabel = localPathLabel,
+                    onlyMedia = onlyMedia
                 )
-                ApiResult.Success(Unit)
-            }
+            )
+            return ApiResult.Success(BindOutcome.JoinPending)
+        }
+        return when (val result = createMapping(spaceId, localPathLabel, treeUri, onlyMedia)) {
+            is ApiResult.Success -> ApiResult.Success(BindOutcome.Bound(result.data))
             is ApiResult.Failure -> result
         }
     }
 
-    suspend fun deleteMapping(mappingId: String): ApiResult<Unit> {
-        val local = mappingDao.getById(mappingId)
-        return when (val result = apiCall { apiClient.api.deleteMapping(mappingId) }) {
+    /** 主设备同意加入后，用暂存的目录自动完成映射；尚未通过审批时返回 null。 */
+    suspend fun finishPendingBinding(spaceId: String): ApiResult<LocalFolderMapping?> {
+        val pending = pendingBindingStore.get(spaceId) ?: return ApiResult.Success(null)
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId) }) {
+            is ApiResult.Success -> result.data
+            is ApiResult.Failure -> return result
+        }
+        spaceDao.upsertAll(listOf(detail.space.toLocal(spaceDao.getById(spaceId))))
+        if (detail.members.none { it.deviceId == deviceId }) {
+            return ApiResult.Success(null)
+        }
+        return when (
+            val result = createMapping(
+                spaceId,
+                pending.localPathLabel,
+                pending.treeUri,
+                pending.onlyMedia
+            )
+        ) {
+            is ApiResult.Success -> {
+                pendingBindingStore.clear(spaceId)
+                ApiResult.Success(result.data)
+            }
+            is ApiResult.Failure ->
+                if (result.code == "MAPPING_EXISTS") {
+                    pendingBindingStore.clear(spaceId)
+                    ApiResult.Success(null)
+                } else {
+                    result
+                }
+        }
+    }
+
+    /**
+     * 更改本地目录绑定：同步服务端展示名，清空旧目录索引后用新目录重新建立基线。
+     * 目录绑定不允许删除，只能替换，避免出现没有本地目录的空间。
+     */
+    suspend fun changeMappingDirectory(
+        mapping: LocalFolderMapping,
+        treeUri: String,
+        localPathLabel: String
+    ): ApiResult<Unit> {
+        return when (
+            val result = apiCall {
+                apiClient.api.updateMapping(
+                    mapping.id,
+                    MappingUpdateRequest(localPathLabel = localPathLabel)
+                )
+            }
+        ) {
             is ApiResult.Success -> {
                 database.withTransaction {
-                    fileDao.clearByMapping(mappingId)
-                    syncTaskDao.deleteByMapping(mappingId)
-                    mappingDao.deleteById(mappingId)
-                    local?.let { spaceDao.adjustMappingCount(it.spaceId, -1) }
+                    fileDao.clearByMapping(mapping.id)
+                    syncTaskDao.deleteByMapping(mapping.id)
+                    mappingDao.upsert(
+                        mapping.copy(
+                            treeUri = treeUri,
+                            localPathLabel = localPathLabel,
+                            status = MappingStatus.ACTIVE,
+                            lastScanComplete = false,
+                            lastScannedAt = null
+                        )
+                    )
                 }
                 ApiResult.Success(Unit)
             }
@@ -419,8 +550,6 @@ class SpaceRepository(
         deviceId = deviceId,
         localPathLabel = localPathLabel,
         treeUri = existing?.treeUri.orEmpty(),
-        remotePrefix = remotePrefix,
-        includeSubdirs = includeSubdirs,
         onlyMedia = onlyMedia,
         status = existing?.status
             ?: if (existing?.treeUri.isNullOrEmpty()) MappingStatus.ACCESS_REVOKED else MappingStatus.ACTIVE,

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.photosync.app.data.local.SyncDatabase
 import com.photosync.app.data.local.SyncDatabaseMigrations
+import com.photosync.app.data.prefs.PendingBindingStore
 import com.photosync.app.data.prefs.SecureTokenStore
 import com.photosync.app.data.prefs.SettingsRepository
 import com.photosync.app.data.remote.ApiClient
@@ -17,13 +18,19 @@ import com.photosync.app.data.sync.FolderScanner
 import com.photosync.app.data.sync.SafFileStore
 import com.photosync.app.data.sync.SyncEngine
 import com.photosync.app.data.sync.SyncRealtimeClient
+import com.photosync.app.util.systemDeviceName
 
 /** 简单的手动依赖容器，随 Application 创建。 */
 class AppContainer(context: Context) {
 
+    /** 系统里这台手机的设备名称，用于登录时自动登记本机 */
+    val deviceName: String = systemDeviceName(context.applicationContext)
+
     val settingsRepository = SettingsRepository(context)
 
     val secureTokenStore = SecureTokenStore(context)
+
+    val pendingBindingStore = PendingBindingStore(context)
 
     val database: SyncDatabase = Room.databaseBuilder(
         context.applicationContext,
@@ -33,7 +40,10 @@ class AppContainer(context: Context) {
         .addMigrations(
             SyncDatabaseMigrations.MIGRATION_1_2,
             SyncDatabaseMigrations.MIGRATION_2_3,
-            SyncDatabaseMigrations.MIGRATION_3_4
+            SyncDatabaseMigrations.MIGRATION_3_4,
+            SyncDatabaseMigrations.MIGRATION_4_5,
+            SyncDatabaseMigrations.MIGRATION_5_6,
+            SyncDatabaseMigrations.MIGRATION_6_7
         )
         .build()
 
@@ -49,7 +59,8 @@ class AppContainer(context: Context) {
         apiClient = apiClient,
         tokenStore = secureTokenStore,
         database = database,
-        folderScanner = FolderScanner(context.applicationContext)
+        folderScanner = FolderScanner(context.applicationContext),
+        pendingBindingStore = pendingBindingStore
     )
 
     val syncRepository = SyncRepository(

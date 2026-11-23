@@ -75,6 +75,21 @@ class SecureTokenStore(context: Context) {
         prefs.edit().clear().apply()
     }
 
+    /**
+     * 退出登录时清理会话：清除 token 与用户信息，但保留 [localDeviceId]。
+     * 这样同一台手机重新登录后会复用同一条设备记录（不会反复新增设备），
+     * 且服务端已在登出时清除其空间绑定，重新登录后需手动加入空间。
+     */
+    fun clearSession() {
+        prefs.edit()
+            .remove(KEY_ACCESS_TOKEN)
+            .remove(KEY_REFRESH_TOKEN)
+            .remove(KEY_USER_ID)
+            .remove(KEY_USER_EMAIL)
+            .remove(KEY_USER_NAME)
+            .apply()
+    }
+
     private companion object {
         const val KEY_ACCESS_TOKEN = "access_token"
         const val KEY_REFRESH_TOKEN = "refresh_token"

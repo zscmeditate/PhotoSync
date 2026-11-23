@@ -47,13 +47,15 @@ class AuthInterceptor(
     override fun intercept(chain: Interceptor.Chain): Response {
         val original = chain.request()
         val accessToken = tokenStore.accessToken
-        val request = if (accessToken.isNullOrBlank()) {
-            original
-        } else {
-            original.newBuilder()
-                .header("Authorization", "Bearer $accessToken")
-                .build()
+        val deviceId = tokenStore.localDeviceId
+        val requestBuilder = original.newBuilder()
+        if (!accessToken.isNullOrBlank()) {
+            requestBuilder.header("Authorization", "Bearer $accessToken")
         }
+        if (!deviceId.isNullOrBlank()) {
+            requestBuilder.header(HEADER_DEVICE_ID, deviceId)
+        }
+        val request = requestBuilder.build()
 
         val response = chain.proceed(request)
         if (response.code != 401) return response
@@ -100,7 +102,7 @@ class AuthInterceptor(
                 body.accessToken
             } else {
                 Log.w(TAG, "刷新 Token 失败：HTTP ${response.code()}")
-                tokenStore.clear()
+                tokenStore.clearSession()
                 null
             }
         } catch (e: Exception) {
@@ -111,6 +113,7 @@ class AuthInterceptor(
 
     private companion object {
         const val HEADER_RETRIED = "X-PhotoSync-Auth-Retry"
+        const val HEADER_DEVICE_ID = "X-Device-Id"
         const val TAG = "PhotoSyncAuth"
     }
 }

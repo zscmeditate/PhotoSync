@@ -3,7 +3,12 @@ import { sha256Hex } from '../src/lib/crypto';
 import { AppError } from '../src/lib/errors';
 import { JwtService } from '../src/lib/jwt';
 import { AuthService } from '../src/services/auth.service';
-import { FakeRefreshTokenRepository, FakeUserRepository } from './fakes';
+import {
+  FakeDeviceRepository,
+  FakeRefreshTokenRepository,
+  FakeSpaceRepository,
+  FakeUserRepository,
+} from './fakes';
 
 const JWT_SECRET = 'test-secret-0123456789abcdef';
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -11,14 +16,16 @@ const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 function makeService() {
   const users = new FakeUserRepository();
   const refreshTokens = new FakeRefreshTokenRepository();
+  const devices = new FakeDeviceRepository();
   const jwt = new JwtService(JWT_SECRET, '15m');
   const auth = new AuthService({
     users,
     refreshTokens,
+    devices,
     jwt,
     refreshTtlMs: REFRESH_TTL_MS,
   });
-  return { auth, users, refreshTokens, jwt };
+  return { auth, users, refreshTokens, devices, jwt };
 }
 
 const registerInput = {
@@ -166,5 +173,74 @@ describe('AuthService.logout', () => {
     const { auth } = makeService();
     const registered = await auth.register(registerInput);
     await expect(auth.logout(registered.user.id, 'unknown-token')).resolves.toBeUndefined();
+  });
+
+  it('removes the device from the list when it logs out', async () => {
+    const { auth, devices } = makeService();
+    const registered = await auth.register(registerInput);
+    const device = await devices.create({
+      userId: registered.user.id,
+      deviceName: 'Phone A',
+      platform: 'android',
+      credentialStatus: 'active',
+      lastSeenAt: new Date(),
+    });
+
+    expect(await devices.listByUser(registered.user.id)).toHaveLength(1);
+
+    await auth.logout(registered.user.id, registered.refreshToken, device.id);
+
+    expect(await devices.listByUser(registered.user.id)).toHaveLength(0);
+    const stored = await devices.findById(device.id);
+    expect(stored?.loggedOutAt).toBeInstanceOf(Date);
+  });
+
+  it('clears the device space bindings so re-login requires re-joining', async () => {
+    const users = new FakeUserRepository();
+    const refreshTokens = new FakeRefreshTokenRepository();
+    const devices = new FakeDeviceRepository();
+    const spaces = new FakeSpaceRepository(devices);
+    const jwt = new JwtService(JWT_SECRET, '15m');
+    const auth = new AuthService({
+      users,
+      refreshTokens,
+      devices,
+      spaces,
+      jwt,
+      refreshTtlMs: REFRESH_TTL_MS,
+    });
+
+    const registered = await auth.register(registerInput);
+    const device = await devices.create({
+      userId: registered.user.id,
+      deviceName: 'Phone A',
+      platform: 'android',
+      credentialStatus: 'active',
+      lastSeenAt: new Date(),
+    });
+
+    const space = await spaces.createWithOwner({
+      ownerId: registered.user.id,
+      name: 'Shared',
+      description: null,
+      deviceId: device.id,
+    });
+    await spaces.createMapping({
+      spaceId: space.id,
+      deviceId: device.id,
+      localPathLabel: 'DCIM',
+      filters: { onlyMedia: false },
+    });
+    expect([...spaces.members.values()].some((m) => m.deviceId === device.id)).toBe(true);
+    expect([...spaces.mappings.values()].some((m) => m.deviceId === device.id)).toBe(true);
+    expect([...spaces.cursors.values()].some((c) => c.deviceId === device.id)).toBe(true);
+
+    await auth.logout(registered.user.id, registered.refreshToken, device.id);
+
+    expect([...spaces.members.values()].some((m) => m.deviceId === device.id)).toBe(false);
+    expect([...spaces.mappings.values()].some((m) => m.deviceId === device.id)).toBe(false);
+    expect([...spaces.cursors.values()].some((c) => c.deviceId === device.id)).toBe(false);
+    // 空间本身仍在，重新登录后可手动加入
+    expect(spaces.spaces.has(space.id)).toBe(true);
   });
 });

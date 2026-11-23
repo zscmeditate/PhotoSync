@@ -349,7 +349,7 @@ class SafFileStore(private val context: Context) {
     }
 
     private fun validatedSegments(path: String): List<String> {
-        val validation = RemotePrefix.validate(path)
+        val validation = RemotePath.validate(path)
         if (!validation.isValid || validation.normalized.isEmpty() || validation.normalized != path) {
             throw SyncPlanningException(validation.error ?: "本地相对路径无效")
         }

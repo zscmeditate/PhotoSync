@@ -63,13 +63,16 @@ afterEach(async () => {
 });
 
 async function addDevice(userId = 'user-1'): Promise<DeviceRecord> {
-  return devices.create({
+  const device = await devices.create({
     userId,
     deviceName: 'Phone',
     platform: 'android',
     credentialStatus: 'active',
     lastSeenAt: new Date(),
   });
+  // 账号下第一台设备作为主设备（创建空间需要主设备身份）
+  await devices.claimPrimaryDevice(userId, device.id);
+  return device;
 }
 
 function errorCode(body: unknown): string {
@@ -139,13 +142,12 @@ describe('Phase 2 routes', () => {
       method: 'POST',
       url: `/api/v1/spaces/${space.id}/mappings`,
       headers: auth,
-      payload: { deviceId: device.id, localPathLabel: 'DCIM', remotePrefix: '\\Camera//2026/' },
+      payload: { deviceId: device.id, localPathLabel: 'DCIM' },
     });
     expect(mapped.statusCode).toBe(201);
     const mapping = (mapped.json() as { mapping: Record<string, any> }).mapping;
     expect(mapping).toMatchObject({
-      remotePrefix: 'Camera/2026',
-      includeSubdirs: true,
+      localPathLabel: 'DCIM',
       onlyMedia: false,
     });
 
@@ -157,15 +159,24 @@ describe('Phase 2 routes', () => {
     expect(mappings.statusCode).toBe(200);
     expect((mappings.json() as { mappings: unknown[] }).mappings).toHaveLength(1);
 
+    const duplicate = await app.inject({
+      method: 'POST',
+      url: `/api/v1/spaces/${space.id}/mappings`,
+      headers: auth,
+      payload: { deviceId: device.id, localPathLabel: 'Documents' },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(errorCode(duplicate.json())).toBe('MAPPING_EXISTS');
+
     const remapped = await app.inject({
       method: 'PATCH',
       url: `/api/v1/mappings/${mapping.id}`,
       headers: auth,
-      payload: { remotePrefix: 'Camera', onlyMedia: true },
+      payload: { localPathLabel: 'Camera', onlyMedia: true },
     });
     expect(remapped.statusCode).toBe(200);
     expect((remapped.json() as { mapping: Record<string, any> }).mapping).toMatchObject({
-      remotePrefix: 'Camera',
+      localPathLabel: 'Camera',
       onlyMedia: true,
     });
 
@@ -210,6 +221,77 @@ describe('Phase 2 routes', () => {
     expect(removedSpace.statusCode).toBe(204);
   });
 
+  it('从设备申请加入空间，主设备查看并同意', async () => {
+    const primary = await addDevice();
+    const secondary = await addDevice();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/spaces',
+      headers: auth,
+      payload: { name: 'Join', deviceId: primary.id },
+    });
+    const spaceId = (created.json() as { space: { id: string } }).space.id;
+
+    const applied = await app.inject({
+      method: 'POST',
+      url: `/api/v1/spaces/${spaceId}/join-requests`,
+      headers: auth,
+      payload: { deviceId: secondary.id },
+    });
+    expect(applied.statusCode).toBe(201);
+    const submitted = applied.json() as { request: Record<string, any>; joined: boolean };
+    expect(submitted.joined).toBe(false);
+    expect(submitted.request).toMatchObject({
+      spaceId,
+      deviceId: secondary.id,
+      status: 'pending',
+    });
+
+    const notPrimary = await app.inject({
+      method: 'GET',
+      url: `/api/v1/spaces/${spaceId}/join-requests?deviceId=${secondary.id}`,
+      headers: auth,
+    });
+    expect(notPrimary.statusCode).toBe(403);
+    expect(errorCode(notPrimary.json())).toBe('DEVICE_NOT_PRIMARY');
+
+    const pending = await app.inject({
+      method: 'GET',
+      url: `/api/v1/spaces/${spaceId}/join-requests?deviceId=${primary.id}`,
+      headers: auth,
+    });
+    expect(pending.statusCode).toBe(200);
+    const requests = (pending.json() as { requests: Array<Record<string, any>> }).requests;
+    expect(requests).toHaveLength(1);
+    expect(requests[0].deviceId).toBe(secondary.id);
+
+    const approved = await app.inject({
+      method: 'POST',
+      url: `/api/v1/join-requests/${requests[0].id}/approve`,
+      headers: auth,
+      payload: { deviceId: primary.id },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect((approved.json() as { request: Record<string, any> }).request.status).toBe('approved');
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/spaces/${spaceId}`,
+      headers: auth,
+    });
+    const members = (detail.json() as { members: Array<{ deviceId: string }> }).members;
+    expect(members.map((member) => member.deviceId)).toContain(secondary.id);
+
+    const repeated = await app.inject({
+      method: 'POST',
+      url: `/api/v1/join-requests/${requests[0].id}/approve`,
+      headers: auth,
+      payload: { deviceId: primary.id },
+    });
+    expect(repeated.statusCode).toBe(409);
+    expect(errorCode(repeated.json())).toBe('JOIN_REQUEST_RESOLVED');
+  });
+
   it('非法空间 UUID 返回 SPACE_NOT_FOUND，非成员返回 SPACE_FORBIDDEN', async () => {
     const malformed = await app.inject({
       method: 'GET',
@@ -236,7 +318,7 @@ describe('Phase 2 routes', () => {
     expect(errorCode(forbidden.json())).toBe('SPACE_FORBIDDEN');
   });
 
-  it('校验设备归属、remotePrefix 和扫描文件数量', async () => {
+  it('校验设备归属和扫描文件数量', async () => {
     const invalidDevice = await app.inject({
       method: 'POST',
       url: '/api/v1/spaces',
@@ -254,14 +336,14 @@ describe('Phase 2 routes', () => {
       payload: { name: 'Photos', deviceId: device.id },
     });
     const spaceId = (created.json() as { space: { id: string } }).space.id;
-    const badPrefix = await app.inject({
+    const emptyLabel = await app.inject({
       method: 'POST',
       url: `/api/v1/spaces/${spaceId}/mappings`,
       headers: auth,
-      payload: { deviceId: device.id, localPathLabel: 'DCIM', remotePrefix: 'Camera/../private' },
+      payload: { deviceId: device.id, localPathLabel: '' },
     });
-    expect(badPrefix.statusCode).toBe(400);
-    expect(errorCode(badPrefix.json())).toBe('VALIDATION_ERROR');
+    expect(emptyLabel.statusCode).toBe(400);
+    expect(errorCode(emptyLabel.json())).toBe('VALIDATION_ERROR');
 
     const tooManyFiles = await app.inject({
       method: 'POST',

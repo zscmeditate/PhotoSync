@@ -24,7 +24,7 @@ data class SyncPreferences(
         /** WorkManager 周期任务的最小间隔为 15 分钟。 */
         const val MIN_INTERVAL_MINUTES = 15
         const val DEFAULT_INTERVAL_MINUTES = 15
-        val INTERVAL_OPTIONS = listOf(15, 30, 60, 180)
+        val INTERVAL_OPTIONS = listOf(15, 30, 60)
     }
 }
 
@@ -36,11 +36,16 @@ class SettingsRepository(private val context: Context) {
     val allowHttp: Flow<Boolean> = context.settingsDataStore.data.map { it[KEY_ALLOW_HTTP] ?: false }
 
     val syncPreferences: Flow<SyncPreferences> = context.settingsDataStore.data.map { prefs ->
+        val stored = prefs[KEY_SYNC_INTERVAL] ?: SyncPreferences.DEFAULT_INTERVAL_MINUTES
         SyncPreferences(
             autoSyncEnabled = prefs[KEY_AUTO_SYNC] ?: true,
             wifiOnly = prefs[KEY_WIFI_ONLY] ?: true,
-            intervalMinutes = (prefs[KEY_SYNC_INTERVAL] ?: SyncPreferences.DEFAULT_INTERVAL_MINUTES)
-                .coerceAtLeast(SyncPreferences.MIN_INTERVAL_MINUTES)
+            // 历史版本可能存过已下线的间隔（如 3 小时），回退到当前最大可选间隔。
+            intervalMinutes = if (stored in SyncPreferences.INTERVAL_OPTIONS) {
+                stored
+            } else {
+                SyncPreferences.INTERVAL_OPTIONS.max()
+            }
         )
     }
 

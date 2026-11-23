@@ -72,6 +72,8 @@ export const deviceSchema = {
     'deviceName',
     'platform',
     'credentialStatus',
+    'isPrimary',
+    'isRejoinRequested',
     'createdAt',
     'lastSeenAt',
   ],
@@ -82,6 +84,11 @@ export const deviceSchema = {
     deviceName: { type: 'string' },
     platform: { type: 'string', enum: ['android'], description: 'Phase 1 固定 android' },
     credentialStatus: { type: 'string', enum: ['active', 'revoked'] },
+    isPrimary: { type: 'boolean', description: '是否为当前账号的主设备' },
+    isRejoinRequested: {
+      type: 'boolean',
+      description: '被移除设备是否正在等待主设备同意重新加入',
+    },
     createdAt: { type: 'string', description: 'ISO8601' },
     lastSeenAt: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
@@ -134,6 +141,31 @@ export const memberSchema = {
   },
 } as const;
 
+export const joinRequestSchema = {
+  type: 'object',
+  required: [
+    'id',
+    'spaceId',
+    'deviceId',
+    'deviceName',
+    'platform',
+    'status',
+    'requestedAt',
+    'resolvedAt',
+  ],
+  additionalProperties: true,
+  properties: {
+    id: { type: 'string' },
+    spaceId: { type: 'string' },
+    deviceId: { type: 'string' },
+    deviceName: { type: 'string' },
+    platform: { type: 'string' },
+    status: { type: 'string', enum: ['pending', 'approved', 'rejected'] },
+    requestedAt: { type: 'string', description: 'ISO8601' },
+    resolvedAt: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+  },
+} as const;
+
 export const mappingSchema = {
   type: 'object',
   required: [
@@ -141,8 +173,6 @@ export const mappingSchema = {
     'spaceId',
     'deviceId',
     'localPathLabel',
-    'remotePrefix',
-    'includeSubdirs',
     'onlyMedia',
     'createdAt',
   ],
@@ -152,8 +182,6 @@ export const mappingSchema = {
     spaceId: { type: 'string' },
     deviceId: { type: 'string' },
     localPathLabel: { type: 'string' },
-    remotePrefix: { type: 'string', description: '规范化前缀，空串表示空间根目录' },
-    includeSubdirs: { type: 'boolean' },
     onlyMedia: { type: 'boolean' },
     createdAt: { type: 'string', description: 'ISO8601' },
   },

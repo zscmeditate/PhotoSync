@@ -52,15 +52,19 @@ object SyncScheduler {
     private const val ONCE_WORK_NAME = "photosync-connected-sync"
     private const val PERIODIC_WORK_NAME = "photosync-periodic-sync"
 
-    /** 立即同步：实时提示、手动同步使用。Wi-Fi 限制在 SyncWorker 内检查。 */
-    fun enqueue(context: Context) {
+    /**
+     * 立即同步：实时提示、手动同步使用。Wi-Fi 限制在 SyncWorker 内检查。
+     * @param force 手动同步为 true：取消可能卡在退避重试中的旧任务并立即执行，
+     *              避免 ExistingWorkPolicy.KEEP 丢弃用户点击；后台触发保持追加，不打断正在运行的同步。
+     */
+    fun enqueue(context: Context, force: Boolean = false) {
         val request = OneTimeWorkRequestBuilder<SyncWorker>()
             .setConstraints(connectedConstraints())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
             ONCE_WORK_NAME,
-            ExistingWorkPolicy.KEEP,
+            if (force) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.APPEND_OR_REPLACE,
             request
         )
     }
