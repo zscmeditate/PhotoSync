@@ -50,8 +50,9 @@ import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.repository.ScanPreview
 import com.photosync.app.data.sync.RemotePrefix
 import com.photosync.app.ui.components.ErrorBanner
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SecondaryButton
+import com.photosync.app.ui.components.appTextFieldColors
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
@@ -185,7 +186,7 @@ private fun MappingForm(
         onClick = onSelectDirectory,
         enabled = !state.creating && !alreadyCreated,
         modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(16.dp)
+        shape = RoundedCornerShape(12.dp)
     ) {
         Icon(Icons.Filled.Folder, contentDescription = null)
         Spacer(Modifier.size(8.dp))
@@ -193,8 +194,8 @@ private fun MappingForm(
     }
     if (state.treeUri != null) {
         Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
@@ -229,6 +230,8 @@ private fun MappingForm(
         supportingText = {
             Text(prefixError ?: "规范化预览：/${normalizedPrefix}；远端文件路径会自动包含此前缀")
         },
+        shape = RoundedCornerShape(12.dp),
+        colors = appTextFieldColors(),
         modifier = Modifier.fillMaxWidth()
     )
 
@@ -266,7 +269,7 @@ private fun MappingForm(
     Spacer(Modifier.height(24.dp))
     Text("④ 确认并建立索引", style = MaterialTheme.typography.titleMedium)
     Spacer(Modifier.height(10.dp))
-    GradientButton(
+    PrimaryButton(
         text = if (state.creating) "正在添加映射…" else "确认添加并扫描",
         onClick = onConfirm,
         enabled = !state.creating && !alreadyCreated && state.treeUri != null && prefixError == null,
@@ -317,13 +320,13 @@ private fun ColumnScope.ScanPreviewContent(preview: ScanPreview, onDone: () -> U
         color = OnSurfaceMuted
     )
     Spacer(Modifier.height(24.dp))
-    GradientButton(text = "完成", onClick = onDone, leadingIcon = Icons.Filled.CheckCircle)
+    PrimaryButton(text = "完成", onClick = onDone, leadingIcon = Icons.Filled.CheckCircle)
 }
 
 @Composable
 private fun PreviewCountRow(label: String, count: Int, icon: ImageVector, color: Color) {
     Surface(
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(12.dp),
         color = color.copy(alpha = 0.10f),
         modifier = Modifier.fillMaxWidth()
     ) {

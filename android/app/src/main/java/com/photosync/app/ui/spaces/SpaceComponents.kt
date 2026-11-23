@@ -99,8 +99,8 @@ fun SpaceCard(
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)

@@ -26,7 +26,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -43,14 +42,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
+import com.photosync.app.ui.components.AppTextField
 import com.photosync.app.ui.components.ErrorBanner
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SecondaryButton
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.SuccessGreen
@@ -117,16 +116,16 @@ fun ServerConfigScreen(
                 color = OnSurfaceMuted
             )
             Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
+            AppTextField(
                 value = url,
                 onValueChange = {
                     // 自动去掉末尾斜杠
                     url = it.trimEnd('/')
                 },
-                label = { Text("https://sync.example.com") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                leadingIcon = { Icon(Icons.Filled.Dns, contentDescription = null) },
+                label = "服务器地址",
+                placeholder = "https://sync.example.com",
+                leadingIcon = Icons.Filled.Dns,
+                keyboardType = KeyboardType.Uri,
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -165,7 +164,7 @@ fun ServerConfigScreen(
             }
 
             Spacer(Modifier.height(28.dp))
-            GradientButton(
+            PrimaryButton(
                 text = "保存并继续",
                 onClick = { viewModel.save(url, allowHttp) },
                 enabled = !health.testing
@@ -180,8 +179,8 @@ private fun HealthResultCard(health: HealthUiState) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

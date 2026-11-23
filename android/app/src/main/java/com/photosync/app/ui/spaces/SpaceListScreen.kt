@@ -40,7 +40,7 @@ import com.photosync.app.data.local.LocalSpace
 import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.ErrorBanner
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.theme.PrimaryBlue
 
 @Composable
@@ -119,7 +119,7 @@ fun SpaceListScreen(
                             subtitle = if (abnormalOnly) "所有本机目录映射均无需处理" else "创建一个空间，再选择本机目录开始建立索引"
                         )
                         if (!abnormalOnly) {
-                            GradientButton(
+                            PrimaryButton(
                                 text = "创建同步空间",
                                 onClick = onCreateSpace,
                                 leadingIcon = Icons.Filled.Add

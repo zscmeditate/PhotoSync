@@ -96,8 +96,8 @@ fun FileVersionsScreen(fileId: String, onBack: () -> Unit) {
 @Composable
 private fun VersionRow(version: RemoteFileVersionDto, isLatest: Boolean) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {

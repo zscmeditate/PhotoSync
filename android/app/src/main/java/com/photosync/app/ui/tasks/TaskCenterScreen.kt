@@ -99,8 +99,8 @@ fun TaskCenterScreen(onBack: () -> Unit) {
             ) {
                 item {
                     Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
@@ -177,8 +177,8 @@ private fun TaskCard(
     onCancel: () -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {

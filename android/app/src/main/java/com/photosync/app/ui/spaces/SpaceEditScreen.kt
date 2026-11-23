@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,7 +28,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.ui.components.ErrorBanner
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
+import com.photosync.app.ui.components.appTextFieldColors
 import com.photosync.app.ui.theme.OnSurfaceMuted
 
 @Composable
@@ -72,6 +74,8 @@ fun SpaceEditScreen(
                     placeholder = { Text("例如：家庭照片") },
                     singleLine = true,
                     enabled = !state.saving,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(16.dp))
@@ -82,6 +86,8 @@ fun SpaceEditScreen(
                     placeholder = { Text("这个空间用于同步什么？") },
                     minLines = 3,
                     enabled = !state.saving,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(16.dp))
@@ -91,6 +97,8 @@ fun SpaceEditScreen(
                     label = { Text("初始设备 ID（默认本机）") },
                     enabled = false,
                     singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(16.dp))
@@ -98,7 +106,7 @@ fun SpaceEditScreen(
                     ErrorBanner(message = it)
                     Spacer(Modifier.height(16.dp))
                 }
-                GradientButton(
+                PrimaryButton(
                     text = if (state.saving) "正在保存…" else if (spaceId == null) "创建空间" else "保存修改",
                     onClick = viewModel::save,
                     enabled = !state.saving,

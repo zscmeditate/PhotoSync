@@ -37,7 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.photosync.app.PhotoSyncApp
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.IconBadge
 import com.photosync.app.ui.theme.AccentCyan
 import com.photosync.app.ui.theme.OnSurfaceMuted
@@ -87,8 +87,8 @@ fun OnboardingScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -99,7 +99,7 @@ fun OnboardingScreen(
         }
 
         Spacer(Modifier.height(36.dp))
-        GradientButton(
+        PrimaryButton(
             text = "开始配置",
             onClick = onStartConfig,
             leadingIcon = Icons.Filled.Dns

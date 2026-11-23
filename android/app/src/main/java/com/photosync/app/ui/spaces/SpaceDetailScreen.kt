@@ -69,8 +69,9 @@ import com.photosync.app.data.sync.RemotePrefix
 import com.photosync.app.data.sync.SyncScheduler
 import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SectionHeader
+import com.photosync.app.ui.components.appTextFieldColors
 import com.photosync.app.ui.theme.AccentCyan
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
@@ -156,7 +157,7 @@ fun SpaceDetailScreen(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(20.dp))
+                                .clip(RoundedCornerShape(12.dp))
                                 .background(Brush.horizontalGradient(listOf(PrimaryBlue, AccentCyan)))
                                 .padding(20.dp)
                         ) {
@@ -185,7 +186,7 @@ fun SpaceDetailScreen(
                         }
                     }
                     item {
-                        GradientButton(
+                        PrimaryButton(
                             text = if (syncStats.runningTasks > 0) "正在同步…" else "立即同步",
                             onClick = viewModel::syncNow,
                             enabled = syncStats.runningTasks == 0,
@@ -194,8 +195,8 @@ fun SpaceDetailScreen(
                     }
                     item {
                         Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
@@ -219,7 +220,7 @@ fun SpaceDetailScreen(
                         }
                     }
                     item {
-                        GradientButton(
+                        PrimaryButton(
                             text = "添加同步目录",
                             onClick = { onAddMapping(spaceId) },
                             leadingIcon = Icons.Filled.Add
@@ -244,8 +245,8 @@ fun SpaceDetailScreen(
                     if (mappings.isEmpty()) {
                         item {
                             Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
                             ) {
                                 EmptyStateView(
                                     icon = Icons.Filled.Folder,
@@ -334,8 +335,8 @@ private fun FolderMappingCard(
     onDelete: () -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onOpenFiles)
@@ -398,8 +399,8 @@ private fun FolderMappingCard(
 @Composable
 private fun MemberRow(member: SpaceMemberDto, thisDeviceId: String?) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -464,6 +465,8 @@ private fun EditMappingDialog(
                     supportingText = {
                         Text(error ?: "远端预览：/${validation.normalized}（空路径表示空间根）")
                     },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {

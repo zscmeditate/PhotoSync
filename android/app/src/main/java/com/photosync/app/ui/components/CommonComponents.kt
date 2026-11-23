@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PhonelinkRing
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SyncProblem
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,8 +32,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +45,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -48,29 +54,27 @@ import com.photosync.app.ui.theme.AccentCyan
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
+import com.photosync.app.ui.theme.RadiusButton
+import com.photosync.app.ui.theme.RadiusCard
 import com.photosync.app.ui.theme.SuccessGreen
+import com.photosync.app.ui.theme.SurfaceSoft
 import com.photosync.app.ui.theme.WarningOrange
 
-/** 醒目渐变主按钮（大号） */
+/** 醒目主按钮（纯蓝大按钮，设计图样式） */
 @Composable
-fun GradientButton(
+fun PrimaryButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     leadingIcon: ImageVector? = null
 ) {
-    val brush = if (enabled) {
-        Brush.horizontalGradient(listOf(PrimaryBlue, AccentCyan))
-    } else {
-        Brush.horizontalGradient(listOf(Color(0xFFB6C2D1), Color(0xFFC9D4DF)))
-    }
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(56.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(brush)
+            .height(52.dp)
+            .clip(RoundedCornerShape(RadiusButton.dp))
+            .background(if (enabled) PrimaryBlue else Color(0xFFC9D4E2))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -80,14 +84,14 @@ fun GradientButton(
                     imageVector = leadingIcon,
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
                 Spacer(Modifier.width(8.dp))
             }
             Text(
                 text = text,
                 color = Color.White,
-                fontSize = 17.sp,
+                fontSize = 16.sp,
                 fontWeight = FontWeight.Bold
             )
         }
@@ -108,9 +112,61 @@ fun SecondaryButton(
         modifier = modifier
             .fillMaxWidth()
             .height(52.dp),
-        shape = RoundedCornerShape(16.dp)
+        shape = RoundedCornerShape(RadiusButton.dp)
     ) {
         Text(text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** 与 AppTextField 一致的输入框配色：灰底、聚焦蓝边（设计图样式） */
+@Composable
+fun appTextFieldColors(): TextFieldColors = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = SurfaceSoft,
+    unfocusedContainerColor = SurfaceSoft,
+    disabledContainerColor = SurfaceSoft,
+    focusedBorderColor = PrimaryBlue,
+    unfocusedBorderColor = Color.Transparent,
+    disabledBorderColor = Color.Transparent
+)
+
+/** 统一输入框：灰底圆角（设计图样式），带可选标签与前后图标 */
+@Composable
+fun AppTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    label: String? = null,
+    placeholder: String? = null,
+    leadingIcon: ImageVector? = null,
+    trailingIcon: @Composable (() -> Unit)? = null,
+    enabled: Boolean = true,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    visualTransformation: VisualTransformation = VisualTransformation.None
+) {
+    Column(modifier = modifier) {
+        if (label != null) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            enabled = enabled,
+            placeholder = placeholder?.let { { Text(it, color = OnSurfaceMuted) } },
+            leadingIcon = leadingIcon?.let { { Icon(it, contentDescription = null, tint = OnSurfaceMuted) } },
+            trailingIcon = trailingIcon,
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            visualTransformation = visualTransformation,
+            shape = RoundedCornerShape(RadiusButton.dp),
+            colors = appTextFieldColors(),
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -244,7 +300,7 @@ fun AppCard(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(RadiusCard.dp))
             .background(brush = background ?: Brush.verticalGradient(
                 listOf(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.surface)
             ))
@@ -281,7 +337,7 @@ fun ConfirmBottomSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(RadiusButton.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = ErrorRed),
                 contentPadding = PaddingValues(vertical = 12.dp)
             ) {

@@ -59,9 +59,10 @@ import com.photosync.app.data.repository.DEFAULT_DEVICE_NAME
 import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.ErrorBanner
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.IconBadge
 import com.photosync.app.ui.components.OnlineStatusRow
+import com.photosync.app.ui.components.appTextFieldColors
 import com.photosync.app.ui.theme.AccentCyan
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
@@ -160,7 +161,7 @@ fun DeviceListScreen() {
                         }
                         item {
                             Spacer(Modifier.height(8.dp))
-                            GradientButton(
+                            PrimaryButton(
                                 text = "添加新设备",
                                 onClick = {
                                     val thisName = devices.firstOrNull { it.isThisDevice }?.deviceName
@@ -212,8 +213,8 @@ private fun DeviceCard(
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
 
     Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -315,6 +316,8 @@ private fun RenameDeviceDialog(
                     onValueChange = { name = it },
                     singleLine = true,
                     label = { Text("设备名称") },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(),
                     modifier = Modifier.fillMaxWidth()
                 )
             }

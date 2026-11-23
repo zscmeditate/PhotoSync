@@ -94,7 +94,7 @@ private fun ActivityRow(task: LocalSyncTask) {
     val error = TaskPresentation.errorText(task.error)
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.40f),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(

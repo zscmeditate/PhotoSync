@@ -20,13 +20,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +53,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -55,6 +61,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.MappingStatus
+import com.photosync.app.data.local.SyncTaskType
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.IconBadge
 import com.photosync.app.ui.components.SectionHeader
@@ -66,9 +73,13 @@ import com.photosync.app.ui.settings.SettingsScreen
 import com.photosync.app.ui.spaces.SpaceCard
 import com.photosync.app.ui.spaces.SpaceListScreen
 import com.photosync.app.ui.spaces.SpaceListViewModel
+import com.photosync.app.ui.tasks.TaskPresentation
 import com.photosync.app.ui.theme.AccentCyan
+import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
+import com.photosync.app.ui.theme.SuccessGreen
+import com.photosync.app.ui.theme.WarningOrange
 
 enum class HomeTab(
     val label: String,
@@ -104,7 +115,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = PrimaryBlue,
                             selectedTextColor = PrimaryBlue,
-                            indicatorColor = PrimaryBlue.copy(alpha = 0.12f),
+                            indicatorColor = Color.Transparent,
                             unselectedIconColor = OnSurfaceMuted,
                             unselectedTextColor = OnSurfaceMuted
                         )
@@ -189,54 +200,61 @@ private fun HomeOverviewTab(
             )
         }
 
-        // 总览状态卡片（渐变）
+        // 总览状态卡片（灰底 + 绿色勾选，设计图样式）
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(Brush.horizontalGradient(listOf(PrimaryBlue, AccentCyan)))
-                .padding(20.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Filled.CloudQueue,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(28.dp)
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = if (spaces.isEmpty()) "暂无同步空间" else "${spaces.size} 个同步空间",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(Modifier.height(10.dp))
+            Icon(
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = null,
+                tint = SuccessGreen,
+                modifier = Modifier.size(36.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (spaces.isEmpty()) "暂无同步空间" else "同步正常",
+                color = if (spaces.isEmpty()) OnSurfaceMuted else SuccessGreen,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(4.dp))
             Text(
                 text = if (spaces.isEmpty()) {
                     "创建空间并添加本地目录后，这里会显示空间与映射摘要。"
                 } else {
                     "共 ${spaces.sumOf { it.mappingCount }} 个目录映射"
                 },
-                color = Color.White.copy(alpha = 0.92f),
-                style = MaterialTheme.typography.bodyMedium
+                color = OnSurfaceMuted,
+                style = MaterialTheme.typography.bodySmall
             )
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Filled.Info,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = "上传 / 下载任务可在「设置 → 任务中心」查看",
-                    color = Color.White.copy(alpha = 0.90f),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "上传 / 下载任务可在「设置 → 任务中心」查看",
+                color = OnSurfaceMuted,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        // 统计卡片（设计图：两列灰底小卡）
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatCard(
+                icon = Icons.Filled.Folder,
+                value = "${spaces.size}",
+                label = "同步空间",
+                modifier = Modifier.weight(1f)
+            )
+            StatCard(
+                icon = Icons.Filled.Sync,
+                value = "${spaces.sumOf { it.mappingCount }}",
+                label = "目录映射",
+                modifier = Modifier.weight(1f)
+            )
         }
 
         Spacer(Modifier.height(24.dp))
@@ -276,20 +294,101 @@ private fun HomeOverviewTab(
             actionText = "查看全部",
             onAction = onOpenActivity
         )
-        SurfaceCard {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onOpenActivity)
-            ) {
+        val app = LocalContext.current.applicationContext as PhotoSyncApp
+        val recentTasks by app.container.syncRepository.observeRecentTasks(3)
+            .collectAsStateWithLifecycle(initialValue = emptyList())
+        if (recentTasks.isEmpty()) {
+            SurfaceCard {
                 EmptyStateView(
                     icon = Icons.Filled.History,
                     title = "同步活动",
                     subtitle = "查看本机最近的上传、下载、删除与冲突处理记录"
                 )
             }
+        } else {
+            SurfaceCard {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    recentTasks.forEachIndexed { index, task ->
+                        if (index > 0) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = onOpenActivity)
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val (icon, tint) = when (task.type) {
+                                SyncTaskType.UPLOAD -> Icons.Filled.CloudUpload to PrimaryBlue
+                                SyncTaskType.DOWNLOAD -> Icons.Filled.CloudDownload to SuccessGreen
+                                SyncTaskType.DELETE -> Icons.Filled.Delete to ErrorRed
+                                else -> Icons.Filled.Edit to WarningOrange
+                            }
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                tint = tint,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = task.remoteRelativePath.substringAfterLast('/'),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${TaskPresentation.typeLabel(task.type)} · ${TaskPresentation.formatTime(task.updatedAt)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = OnSurfaceMuted
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun StatCard(
+    icon: ImageVector,
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = PrimaryBlue,
+            modifier = Modifier.size(24.dp)
+        )
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted
+            )
+        }
     }
 }
 
@@ -298,8 +397,8 @@ private fun SurfaceCard(content: @Composable () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         content()
     }

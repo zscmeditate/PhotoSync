@@ -54,7 +54,7 @@ import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.diagnostics.DiagnosticsExporter
 import com.photosync.app.data.prefs.SyncPreferences
 import com.photosync.app.data.sync.SyncScheduler
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 import kotlinx.coroutines.launch
@@ -132,8 +132,8 @@ fun SettingsScreen(
             )
 
             Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -159,8 +159,8 @@ fun SettingsScreen(
                 modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
             )
             Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -217,8 +217,8 @@ fun SettingsScreen(
                 modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
             )
             Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -252,7 +252,7 @@ fun SettingsScreen(
             }
 
             Spacer(Modifier.height(32.dp))
-            GradientButton(
+            PrimaryButton(
                 text = "退出登录",
                 onClick = { viewModel.logout() },
                 leadingIcon = Icons.AutoMirrored.Filled.Logout

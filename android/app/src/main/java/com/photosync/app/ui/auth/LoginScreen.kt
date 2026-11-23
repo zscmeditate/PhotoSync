@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
@@ -25,7 +24,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -54,8 +52,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.repository.DEFAULT_DEVICE_NAME
+import com.photosync.app.ui.components.AppTextField
 import com.photosync.app.ui.components.ErrorBanner
-import com.photosync.app.ui.components.GradientButton
+import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.theme.AccentCyan
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
@@ -114,28 +113,25 @@ fun LoginScreen(
             )
 
             Spacer(Modifier.height(28.dp))
-            OutlinedTextField(
+            AppTextField(
                 value = email,
                 onValueChange = { email = it },
-                label = { Text("邮箱") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                leadingIcon = { Icon(Icons.Filled.Email, contentDescription = null) },
-                modifier = Modifier.fillMaxWidth()
+                label = "邮箱",
+                leadingIcon = Icons.Filled.Email,
+                keyboardType = KeyboardType.Email
             )
             Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
+            AppTextField(
                 value = password,
                 onValueChange = { password = it },
-                label = { Text("密码") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                label = "密码",
+                keyboardType = KeyboardType.Password,
                 visualTransformation = if (passwordVisible) {
                     VisualTransformation.None
                 } else {
                     PasswordVisualTransformation()
                 },
-                leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                leadingIcon = Icons.Filled.Lock,
                 trailingIcon = {
                     IconButton(onClick = { passwordVisible = !passwordVisible }) {
                         Icon(
@@ -147,17 +143,14 @@ fun LoginScreen(
                             contentDescription = if (passwordVisible) "隐藏密码" else "显示密码"
                         )
                     }
-                },
-                modifier = Modifier.fillMaxWidth()
+                }
             )
             Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
+            AppTextField(
                 value = deviceName,
                 onValueChange = { deviceName = it },
-                label = { Text("本机设备名称") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Filled.PhoneAndroid, contentDescription = null) },
-                modifier = Modifier.fillMaxWidth()
+                label = "本机设备名称",
+                leadingIcon = Icons.Filled.PhoneAndroid
             )
 
             val errorState = state as? AuthFormState.Error
@@ -167,7 +160,7 @@ fun LoginScreen(
             }
 
             Spacer(Modifier.height(28.dp))
-            GradientButton(
+            PrimaryButton(
                 text = "登录",
                 onClick = { viewModel.login(email, password, deviceName) },
                 enabled = state !is AuthFormState.Loading
