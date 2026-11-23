@@ -108,6 +108,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
+                    .navigationBarsPadding()
             ) {
                 HorizontalDivider(
                     thickness = 0.5.dp,
@@ -116,8 +117,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .height(52.dp),
+                        .height(64.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     HomeTab.entries.forEach { item ->
@@ -140,7 +140,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                                 tint = tint,
                                 modifier = Modifier.size(21.dp)
                             )
-                            Spacer(Modifier.height(2.dp))
+                            Spacer(Modifier.height(0.dp))
                             Text(
                                 text = item.label,
                                 fontSize = 10.sp,
@@ -259,8 +259,10 @@ private fun HomeOverviewTab(
             Text(
                 text = if (spaces.isEmpty()) {
                     "创建空间并添加本地目录后，这里会显示空间与映射摘要。"
+                } else if (mappings.isEmpty()) {
+                    "本机尚未绑定本地目录"
                 } else {
-                    "共 ${spaces.sumOf { it.mappingCount }} 台设备已绑定目录"
+                    "本机已参与 ${mappings.size} 个空间的同步"
                 },
                 color = OnSurfaceMuted,
                 style = MaterialTheme.typography.bodySmall
@@ -284,8 +286,8 @@ private fun HomeOverviewTab(
             )
             StatCard(
                 icon = Icons.Filled.Sync,
-                value = "${spaces.sumOf { it.mappingCount }}",
-                label = "已绑定目录",
+                value = "${mappings.size}",
+                label = "本机同步空间",
                 modifier = Modifier.weight(1f)
             )
         }

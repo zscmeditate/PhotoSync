@@ -227,10 +227,10 @@ export class SpaceService {
       description: input.description ?? null,
       deviceId: input.deviceId,
     });
-    return this.toSpaceDto(space, 'owner', 1, 0);
+    return this.toSpaceDto(space, 'admin', 1, 0);
   }
 
-  async listSpaces(userId: string): Promise<SpaceDto[]> {
+  async listSpaces(userId: string, deviceId?: string): Promise<SpaceDto[]> {
     const deviceIds = (await this.deps.devices.listByUser(userId)).map((device) => device.id);
     const spaces = await this.deps.spaces.listAccessible(userId, deviceIds);
     const result: SpaceDto[] = [];
@@ -240,7 +240,7 @@ export class SpaceService {
         continue;
       }
       seen.add(space.id);
-      const role = await this.roleFor(space, userId, deviceIds);
+      const role = await this.roleFor(space, userId, deviceIds, deviceId);
       if (role === null) {
         throw spaceForbidden();
       }
@@ -252,8 +252,9 @@ export class SpaceService {
   async getSpace(
     userId: string,
     spaceId: string,
+    deviceId?: string,
   ): Promise<{ space: SpaceDto; members: MemberDto[] }> {
-    const access = await this.requireAccess(userId, spaceId);
+    const access = await this.requireAccess(userId, spaceId, deviceId);
     const members = await this.deps.spaces.listMembers(spaceId);
     const now = this.now();
     return {
@@ -262,23 +263,28 @@ export class SpaceService {
     };
   }
 
-  async updateSpace(userId: string, spaceId: string, data: SpaceUpdateData): Promise<SpaceDto> {
-    const access = await this.requireAccess(userId, spaceId);
-    if (access.role !== 'owner' && access.role !== 'admin') {
-      throw spaceForbidden();
-    }
+  async updateSpace(
+    userId: string,
+    deviceId: string,
+    spaceId: string,
+    data: SpaceUpdateData,
+  ): Promise<SpaceDto> {
+    await this.requireAccess(userId, spaceId);
+    await this.requirePrimaryDevice(userId, deviceId);
     const updated = await this.deps.spaces.update(spaceId, {
       ...(data.name !== undefined ? { name: data.name.trim() } : {}),
       ...(data.description !== undefined ? { description: data.description } : {}),
     });
-    return this.toSpaceDto(updated, access.role);
+    return this.toSpaceDto(updated, 'admin');
   }
 
-  async deleteSpace(userId: string, spaceId: string): Promise<void> {
-    const access = await this.requireAccess(userId, spaceId);
-    if (access.space.ownerId !== userId) {
-      throw spaceForbidden();
-    }
+  async deleteSpace(
+    userId: string,
+    deviceId: string,
+    spaceId: string,
+  ): Promise<void> {
+    await this.requireAccess(userId, spaceId);
+    await this.requirePrimaryDevice(userId, deviceId);
     await this.deps.spaces.delete(spaceId);
   }
 
@@ -294,30 +300,40 @@ export class SpaceService {
     return { member: this.toMemberDto(member, this.now()), created: existing === null };
   }
 
-  async removeSpaceMember(userId: string, spaceId: string, deviceId: string): Promise<void> {
-    const access = await this.requireAccess(userId, spaceId);
+  async removeSpaceMember(
+    userId: string,
+    operatorDeviceId: string,
+    spaceId: string,
+    deviceId: string,
+  ): Promise<void> {
+    await this.requireAccess(userId, spaceId);
     const member = await this.deps.spaces.findMember(spaceId, deviceId);
     if (!member) {
       throw notMember(404);
     }
-    if (access.space.ownerId !== userId) {
-      await this.requireOwnedActiveDevice(userId, deviceId);
+    const isPrimary = await this.isPrimaryDevice(userId, operatorDeviceId);
+    // 主设备可以踢任何人；从设备只能退出自己
+    if (!isPrimary && operatorDeviceId !== deviceId) {
+      throw spaceForbidden();
     }
     await this.deps.spaces.removeMember(spaceId, deviceId);
   }
 
-  /** 从设备申请加入空间；主设备自己申请时无需审批，直接成为成员。 */
+  /** 设备申请加入本账号下的空间；主设备自己申请时无需审批，直接成为成员。 */
   async requestToJoinSpace(
     userId: string,
     spaceId: string,
     deviceId: string,
   ): Promise<{ request: JoinRequestDto; joined: boolean }> {
-    const device = await this.requireOwnedActiveDevice(userId, deviceId);
+    await this.requireOwnedActiveDevice(userId, deviceId);
     const space = await this.deps.spaces.findById(spaceId);
     if (!space) {
       throw spaceNotFound();
     }
-    if (space.ownerId !== userId) {
+    // 同账号即可，不再限 owner
+    const deviceIds = (await this.deps.devices.listByUser(userId)).map((d) => d.id);
+    const accessible = await this.deps.spaces.listAccessible(userId, deviceIds);
+    if (!accessible.some((s) => s.id === spaceId)) {
       throw spaceForbidden();
     }
     if (await this.deps.spaces.findMember(spaceId, deviceId)) {
@@ -355,7 +371,10 @@ export class SpaceService {
     if (!space) {
       throw spaceNotFound();
     }
-    if (space.ownerId !== userId) {
+    // 同账号成员均可查看，只有主设备能审批
+    const deviceIds = (await this.deps.devices.listByUser(userId)).map((d) => d.id);
+    const accessible = await this.deps.spaces.listAccessible(userId, deviceIds);
+    if (!accessible.some((s) => s.id === spaceId)) {
       throw spaceForbidden();
     }
     await this.requirePrimaryDevice(userId, approverDeviceId);
@@ -378,7 +397,9 @@ export class SpaceService {
     if (!space) {
       throw spaceNotFound();
     }
-    if (space.ownerId !== userId) {
+    const deviceIds = (await this.deps.devices.listByUser(userId)).map((d) => d.id);
+    const accessible = await this.deps.spaces.listAccessible(userId, deviceIds);
+    if (!accessible.some((s) => s.id === space.id)) {
       throw spaceForbidden();
     }
     await this.requirePrimaryDevice(userId, approverDeviceId);
@@ -531,25 +552,49 @@ export class SpaceService {
     }
   }
 
+  private async isPrimaryDevice(userId: string, deviceId: string): Promise<boolean> {
+    const device = await this.deps.devices.findById(deviceId);
+    if (!device || device.userId !== userId || device.credentialStatus !== 'active') {
+      return false;
+    }
+    const primaryDeviceId = await this.deps.devices.findPrimaryDeviceId(userId);
+    return primaryDeviceId === deviceId;
+  }
+
+  /**
+   * 获取指定设备在空间中的角色。
+   * 主设备一律视为 admin（全空间管理者），从设备视为 member。
+   */
   private async roleFor(
     space: SyncSpaceRecord,
     userId: string,
     deviceIds: string[],
+    specificDeviceId?: string,
   ): Promise<MemberRoleValue | null> {
-    if (space.ownerId === userId) {
-      return 'owner';
+    const primaryDeviceId = await this.deps.devices.findPrimaryDeviceId(userId);
+
+    if (specificDeviceId) {
+      // 主设备 → admin，其他设备查 SpaceMember 表
+      if (primaryDeviceId === specificDeviceId) return 'admin';
+      const member = await this.deps.spaces.findMember(space.id, specificDeviceId);
+      if (member) return member.role;
+      // 该设备还没加入这个空间，且不是主设备
+      return null;
     }
+    // 回退：取账号下所有设备的最高角色（兼容老接口）
     const memberships = await this.deps.spaces.listMembershipsForDevices(space.id, deviceIds);
-    return highestRole(memberships.map((member) => member.role));
+    const roles = memberships.map((m) => m.role);
+    if (primaryDeviceId) roles.push('admin');
+    return highestRole(roles);
   }
 
-  private async requireAccess(userId: string, spaceId: string): Promise<SpaceAccess> {
+  private async requireAccess(userId: string, spaceId: string, specificDeviceId?: string): Promise<SpaceAccess> {
     const space = await this.deps.spaces.findById(spaceId);
     if (!space) {
       throw spaceNotFound();
     }
     const deviceIds = (await this.deps.devices.listByUser(userId)).map((device) => device.id);
-    const role = await this.roleFor(space, userId, deviceIds);
+    const role = await this.roleFor(space, userId, deviceIds, specificDeviceId);
     if (role === null) {
       throw spaceForbidden();
     }

@@ -117,6 +117,9 @@ interface LocalFolderMappingDao {
     @Query("SELECT * FROM local_folder_mappings WHERE deviceId = :deviceId")
     fun observeByDevice(deviceId: String): Flow<List<LocalFolderMapping>>
 
+    @Query("SELECT * FROM local_folder_mappings WHERE deviceId = :deviceId")
+    suspend fun getByDevice(deviceId: String): List<LocalFolderMapping>
+
     @Query("SELECT * FROM local_folder_mappings WHERE id = :id")
     fun observeById(id: String): Flow<LocalFolderMapping?>
 

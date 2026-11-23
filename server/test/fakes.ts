@@ -284,7 +284,7 @@ export class FakeSpaceRepository implements SpaceRepository {
       id: randomUUID(),
       spaceId: space.id,
       deviceId: data.deviceId,
-      role: 'owner',
+      role: 'member',
       joinedAt: now,
     });
     this.cursors.set(this.key(space.id, data.deviceId), {

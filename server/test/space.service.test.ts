@@ -94,7 +94,7 @@ async function setupSpace(userId = 'user-1') {
 }
 
 describe('SpaceService 空间创建、列表与详情', () => {
-  it('创建空间时同时写入 owner 成员与零游标，并序列化 revision', async () => {
+  it('创建空间时同时写入 member 成员与零游标，并序列化 revision', async () => {
     const { service, devices, spaces } = makeService();
     const device = await addDevice(devices, 'user-1');
 
@@ -109,12 +109,12 @@ describe('SpaceService 空间创建、列表与详情', () => {
       name: 'Photos',
       description: 'Family',
       revision: '0',
-      role: 'owner',
+      role: 'admin', // 主设备一律视为 admin
       memberCount: 1,
       mappingCount: 0,
     });
     expect(spaces.spaces.get(space.id)?.revision).toBe(0n);
-    expect(spaces.members.get(`${space.id}:${device.id}`)?.role).toBe('owner');
+    expect(spaces.members.get(`${space.id}:${device.id}`)?.role).toBe('member');
     expect(spaces.cursors.get(`${space.id}:${device.id}`)?.lastAppliedRevision).toBe(0n);
   });
 
@@ -170,7 +170,7 @@ describe('SpaceService 空间创建、列表与详情', () => {
     const list = await service.listSpaces('user-1');
 
     expect(list).toHaveLength(2);
-    expect(list.find((space) => space.id === owned.id)?.role).toBe('owner');
+    expect(list.find((space) => space.id === owned.id)?.role).toBe('admin'); // 主设备 = admin
     expect(list.find((space) => space.id === joined.id)?.role).toBe('admin');
   });
 
@@ -193,37 +193,39 @@ describe('SpaceService 空间创建、列表与详情', () => {
 });
 
 describe('SpaceService 空间修改与删除权限', () => {
-  it('owner 可改名和删除', async () => {
-    const { service, spaces, space, userId } = await setupSpace();
-    const updated = await service.updateSpace(userId, space.id, {
+  it('主设备可改名和删除自己账号下的任意空间', async () => {
+    const { service, devices, spaces, device, space, userId } = await setupSpace();
+    // 再建一个从设备加入空间
+    const secondary = await addDevice(devices, userId);
+    seedMembership(spaces, space.id, secondary.id, 'member');
+
+    const updated = await service.updateSpace(userId, device.id, space.id, {
       name: '  New name ',
       description: 'updated',
     });
     expect(updated.name).toBe('New name');
     expect(updated.description).toBe('updated');
 
-    await service.deleteSpace(userId, space.id);
+    await service.deleteSpace(userId, device.id, space.id);
     expect(spaces.spaces.has(space.id)).toBe(false);
   });
 
-  it('admin 可改名但不能删除，普通成员两种操作均为 403', async () => {
-    const { service, spaces, device, space, userId } = await setupSpace();
-    spaces.spaces.get(space.id)!.ownerId = 'user-2';
-    const member = spaces.members.get(`${space.id}:${device.id}`)!;
-    member.role = 'member';
+  it('从设备不能改名也不能删除空间', async () => {
+    const { service, devices, spaces, device, space, userId } = await setupSpace();
+    const secondary = await addDevice(devices, userId);
+    seedMembership(spaces, space.id, secondary.id, 'member');
+    spaces.members.get(`${space.id}:${device.id}`)!.role = 'member';
 
     await expectAppError(
-      () => service.updateSpace(userId, space.id, { name: 'Forbidden' }),
+      () => service.updateSpace(userId, secondary.id, space.id, { name: 'Forbidden' }),
       403,
-      'SPACE_FORBIDDEN',
+      'DEVICE_NOT_PRIMARY',
     );
-    await expectAppError(() => service.deleteSpace(userId, space.id), 403, 'SPACE_FORBIDDEN');
-
-    member.role = 'admin';
-    await expect(service.updateSpace(userId, space.id, { name: 'Admin edit' })).resolves.toMatchObject(
-      { name: 'Admin edit', role: 'admin' },
+    await expectAppError(
+      () => service.deleteSpace(userId, secondary.id, space.id),
+      403,
+      'DEVICE_NOT_PRIMARY',
     );
-    await expectAppError(() => service.deleteSpace(userId, space.id), 403, 'SPACE_FORBIDDEN');
   });
 });
 
@@ -245,7 +247,7 @@ describe('SpaceService 成员管理', () => {
     expect(spaces.cursors.get(`${space.id}:${second.id}`)?.lastAppliedRevision).toBe(9n);
   });
 
-  it('非 owner 只能移除自己的活跃设备，owner 可移除任意成员；不存在返回 404', async () => {
+  it('主设备可移除任意成员，从设备只能退出自己', async () => {
     const { service, devices, spaces, device, space, userId } = await setupSpace();
     const ownSecond = await addDevice(devices, userId);
     const other = await addDevice(devices, 'user-2');
@@ -256,22 +258,23 @@ describe('SpaceService 成员管理', () => {
       localPathLabel: 'DCIM',
       onlyMedia: false,
     });
-    spaces.spaces.get(space.id)!.ownerId = 'user-2';
-    spaces.members.get(`${space.id}:${device.id}`)!.role = 'member';
 
+    // 从设备不能踢别人
     await expectAppError(
-      () => service.removeSpaceMember(userId, space.id, other.id),
-      400,
-      'INVALID_DEVICE',
+      () => service.removeSpaceMember(userId, ownSecond.id, space.id, other.id),
+      403,
+      'SPACE_FORBIDDEN',
     );
-    await service.removeSpaceMember(userId, space.id, ownSecond.id);
+    // 从设备可以退出自己
+    await service.removeSpaceMember(userId, ownSecond.id, space.id, ownSecond.id);
     expect(await spaces.findMember(space.id, ownSecond.id)).toBeNull();
     expect(await spaces.listMappings(space.id, ownSecond.id)).toHaveLength(0);
 
-    await service.removeSpaceMember('user-2', space.id, device.id);
-    expect(await spaces.findMember(space.id, device.id)).toBeNull();
+    // 主设备可以踢任何人
+    await service.removeSpaceMember(userId, device.id, space.id, other.id);
+    expect(await spaces.findMember(space.id, other.id)).toBeNull();
     await expectAppError(
-      () => service.removeSpaceMember('user-2', space.id, device.id),
+      () => service.removeSpaceMember(userId, device.id, space.id, other.id),
       404,
       'NOT_MEMBER',
     );
@@ -350,7 +353,7 @@ describe('SpaceService 加入空间申请', () => {
 
   it('主设备自己申请时直接成为成员，已是成员再申请返回 409', async () => {
     const { service, space, device, userId } = await setupSpace();
-    await service.removeSpaceMember(userId, space.id, device.id);
+    await service.removeSpaceMember(userId, device.id, space.id, device.id);
 
     const joined = await service.requestToJoinSpace(userId, space.id, device.id);
     expect(joined.joined).toBe(true);

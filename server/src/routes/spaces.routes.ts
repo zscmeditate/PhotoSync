@@ -27,6 +27,8 @@ export interface SpacesRoutesOptions {
 const uuidSchema = z.string().uuid();
 const spaceParamsSchema = z.object({ spaceId: uuidSchema });
 const memberParamsSchema = z.object({ spaceId: uuidSchema, deviceId: uuidSchema });
+const deviceQuerySchema = z.object({ deviceId: uuidSchema.optional() });
+const deviceBodySchema = z.object({ deviceId: uuidSchema });
 
 const createSpaceBodySchema = z.object({
   name: z.string().trim().min(1).max(64),
@@ -273,6 +275,11 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
         tags: ['spaces'],
         summary: '列出当前用户可访问的同步空间',
         security: bearerSecurity,
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
         response: {
           200: spaceListSchema,
           401: errorResponses[401],
@@ -280,9 +287,12 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
         },
       },
     },
-    async (request: FastifyRequest) => ({
-      spaces: await spaceService.listSpaces(authUserId(request)),
-    }),
+    async (request: FastifyRequest) => {
+      const query = parse(deviceQuerySchema, request.query);
+      return {
+        spaces: await spaceService.listSpaces(authUserId(request), query.deviceId),
+      };
+    },
   );
 
   app.get(
@@ -294,6 +304,11 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
         summary: '空间详情与成员列表',
         security: bearerSecurity,
         params: spaceParams,
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
         response: {
           200: spaceDetailSchema,
           401: errorResponses[401],
@@ -305,7 +320,8 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
     },
     async (request: FastifyRequest) => {
       const spaceId = parseSpaceId(request.params);
-      return spaceService.getSpace(authUserId(request), spaceId);
+      const query = parse(deviceQuerySchema, request.query);
+      return spaceService.getSpace(authUserId(request), spaceId, query.deviceId);
     },
   );
 
@@ -315,13 +331,15 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
       preHandler: auth,
       schema: {
         tags: ['spaces'],
-        summary: '修改空间信息',
+        summary: '修改空间信息（主设备操作）',
         security: bearerSecurity,
         params: spaceParams,
         body: {
           type: 'object',
+          required: ['deviceId'],
           additionalProperties: false,
           properties: {
+            deviceId: { type: 'string' },
             name: { type: 'string', minLength: 1, maxLength: 64 },
             description: { type: 'string', maxLength: 256 },
           },
@@ -338,8 +356,13 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
     },
     async (request: FastifyRequest) => {
       const spaceId = parseSpaceId(request.params);
-      const body = parse(updateSpaceBodySchema, request.body);
-      const space = await spaceService.updateSpace(authUserId(request), spaceId, body);
+      const body = z.intersection(deviceBodySchema, updateSpaceBodySchema).parse(request.body);
+      const space = await spaceService.updateSpace(
+        authUserId(request),
+        body.deviceId,
+        spaceId,
+        body,
+      );
       return { space };
     },
   );
@@ -350,9 +373,15 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
       preHandler: auth,
       schema: {
         tags: ['spaces'],
-        summary: '删除空间（仅 owner）',
+        summary: '删除空间（主设备操作）',
         security: bearerSecurity,
         params: spaceParams,
+        querystring: {
+          type: 'object',
+          required: ['deviceId'],
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
         response: {
           401: errorResponses[401],
           403: errorResponses[403],
@@ -363,7 +392,8 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
     },
     async (request: FastifyRequest, reply) => {
       const spaceId = parseSpaceId(request.params);
-      await spaceService.deleteSpace(authUserId(request), spaceId);
+      const query = parse(z.object({ deviceId: uuidSchema }), request.query);
+      await spaceService.deleteSpace(authUserId(request), query.deviceId, spaceId);
       return reply.status(204).send();
     },
   );
@@ -412,9 +442,15 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
       preHandler: auth,
       schema: {
         tags: ['spaces'],
-        summary: '将设备移出空间',
+        summary: '将设备移出空间（主设备可踢人，从设备只能退出自己）',
         security: bearerSecurity,
         params: memberParams,
+        querystring: {
+          type: 'object',
+          required: ['operatorDeviceId'],
+          additionalProperties: false,
+          properties: { operatorDeviceId: { type: 'string' } },
+        },
         response: {
           400: errorResponses[400],
           401: errorResponses[401],
@@ -426,7 +462,13 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
     },
     async (request: FastifyRequest, reply) => {
       const { spaceId, deviceId } = parseMemberParams(request.params);
-      await spaceService.removeSpaceMember(authUserId(request), spaceId, deviceId);
+      const query = parse(z.object({ operatorDeviceId: uuidSchema }), request.query);
+      await spaceService.removeSpaceMember(
+        authUserId(request),
+        query.operatorDeviceId,
+        spaceId,
+        deviceId,
+      );
       return reply.status(204).send();
     },
   );

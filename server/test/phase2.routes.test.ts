@@ -92,7 +92,7 @@ describe('Phase 2 routes', () => {
     });
     expect(created.statusCode).toBe(201);
     const space = (created.json() as { space: Record<string, any> }).space;
-    expect(space).toMatchObject({ revision: '0', role: 'owner', memberCount: 1, mappingCount: 0 });
+    expect(space).toMatchObject({ revision: '0', role: 'admin', memberCount: 1, mappingCount: 0 });
 
     const list = await app.inject({ method: 'GET', url: '/api/v1/spaces', headers: auth });
     expect(list.statusCode).toBe(200);
@@ -133,7 +133,7 @@ describe('Phase 2 routes', () => {
       method: 'PATCH',
       url: `/api/v1/spaces/${space.id}`,
       headers: auth,
-      payload: { name: 'Renamed' },
+      payload: { deviceId: device.id, name: 'Renamed' },
     });
     expect(renamed.statusCode).toBe(200);
     expect((renamed.json() as { space: { name: string } }).space.name).toBe('Renamed');
@@ -209,13 +209,13 @@ describe('Phase 2 routes', () => {
     expect(removedMapping.statusCode).toBe(204);
     const removedMember = await app.inject({
       method: 'DELETE',
-      url: `/api/v1/spaces/${space.id}/members/${second.id}`,
+      url: `/api/v1/spaces/${space.id}/members/${second.id}?operatorDeviceId=${device.id}`,
       headers: auth,
     });
     expect(removedMember.statusCode).toBe(204);
     const removedSpace = await app.inject({
       method: 'DELETE',
-      url: `/api/v1/spaces/${space.id}`,
+      url: `/api/v1/spaces/${space.id}?deviceId=${device.id}`,
       headers: auth,
     });
     expect(removedSpace.statusCode).toBe(204);

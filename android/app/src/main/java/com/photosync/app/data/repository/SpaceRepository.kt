@@ -263,6 +263,7 @@ class SpaceRepository(
         if (existing.isNotEmpty()) {
             return ApiResult.Failure("MAPPING_EXISTS", "该空间已绑定本地目录，请先删除原目录映射")
         }
+        directoryInUseFailure(deviceId, treeUri, spaceId)?.let { return it }
 
         val membership = ensureCurrentDeviceIsMember(spaceId, deviceId)
         if (membership is ApiResult.Failure) return membership
@@ -306,6 +307,26 @@ class SpaceRepository(
         )
     }
 
+    /**
+     * 同一个本地目录只能绑定一个空间：若本机其他空间已绑定该目录，返回失败结果。
+     * 目录身份以 SAF 树 URI 为准，忽略末尾斜杠差异。
+     */
+    private suspend fun directoryInUseFailure(
+        deviceId: String,
+        treeUri: String,
+        spaceId: String
+    ): ApiResult.Failure? {
+        val target = treeUri.trimEnd('/')
+        val conflict = mappingDao.getByDevice(deviceId)
+            .firstOrNull { it.spaceId != spaceId && it.treeUri.trimEnd('/') == target }
+            ?: return null
+        val conflictName = spaceDao.getById(conflict.spaceId)?.name ?: "其他空间"
+        return ApiResult.Failure(
+            "DIRECTORY_IN_USE",
+            "该本地目录已绑定空间「$conflictName」，一个本地目录只能绑定一个空间"
+        )
+    }
+
     /** 本机在该空间是否有「已选目录、等待主设备同意」的暂存绑定。 */
     fun observePendingBinding(spaceId: String): Flow<Boolean> =
         pendingBindingStore.observe(spaceId).map { it != null }
@@ -325,6 +346,7 @@ class SpaceRepository(
         if (mappingDao.getBySpaceAndDevice(spaceId, deviceId).isNotEmpty()) {
             return ApiResult.Failure("MAPPING_EXISTS", "该空间已绑定本地目录")
         }
+        directoryInUseFailure(deviceId, treeUri, spaceId)?.let { return it }
 
         val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId) }) {
             is ApiResult.Success -> result.data
@@ -383,13 +405,18 @@ class SpaceRepository(
                 pendingBindingStore.clear(spaceId)
                 ApiResult.Success(result.data)
             }
-            is ApiResult.Failure ->
-                if (result.code == "MAPPING_EXISTS") {
+            is ApiResult.Failure -> when (result.code) {
+                "MAPPING_EXISTS" -> {
                     pendingBindingStore.clear(spaceId)
                     ApiResult.Success(null)
-                } else {
+                }
+                // 暂存目录在等待审批期间已被其他空间占用，清理暂存并提示原因。
+                "DIRECTORY_IN_USE" -> {
+                    pendingBindingStore.clear(spaceId)
                     result
                 }
+                else -> result
+            }
         }
     }
 
@@ -402,6 +429,7 @@ class SpaceRepository(
         treeUri: String,
         localPathLabel: String
     ): ApiResult<Unit> {
+        directoryInUseFailure(mapping.deviceId, treeUri, mapping.spaceId)?.let { return it }
         return when (
             val result = apiCall {
                 apiClient.api.updateMapping(

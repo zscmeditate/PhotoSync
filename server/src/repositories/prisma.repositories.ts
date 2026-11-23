@@ -260,7 +260,7 @@ export class PrismaSpaceRepository implements SpaceRepository {
         name: data.name,
         description: data.description,
         members: {
-          create: { device: { connect: { id: data.deviceId } }, role: 'owner' },
+          create: { device: { connect: { id: data.deviceId } }, role: 'member' },
         },
         cursors: {
           create: {
