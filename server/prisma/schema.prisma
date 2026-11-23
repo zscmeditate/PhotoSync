@@ -304,6 +304,7 @@ model SyncConflict {
   createdAt        DateTime       @default(now())
 
   @@index([spaceId, fileId])
+  @@index([spaceId, status])
   @@index([status])
   @@map("sync_conflicts")
 }
