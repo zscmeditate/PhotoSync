@@ -96,10 +96,21 @@ if (-not (Test-Path (Join-Path $ServerDir 'node_modules'))) {
     Push-Location $ServerDir
     try { npm install --no-audit --no-fund } finally { Pop-Location }
 }
-if (-not (Test-Path (Join-Path $ServerDir 'node_modules\.prisma\client\index.js'))) {
+# Prisma Client 缺失，或 schema 比已生成的 Client 更新时，都需要重新生成
+$PrismaClientEntry = Join-Path $ServerDir 'node_modules\.prisma\client\index.js'
+$PrismaSchemaFile  = Join-Path $ServerDir 'prisma\schema.prisma'
+$needGenerate = -not (Test-Path $PrismaClientEntry)
+if (-not $needGenerate -and
+    (Get-Item $PrismaSchemaFile).LastWriteTime -gt (Get-Item $PrismaClientEntry).LastWriteTime) {
+    $needGenerate = $true
+}
+if ($needGenerate) {
     Write-Host '[安装] 生成 Prisma Client ...'
     Push-Location $ServerDir
-    try { npx prisma generate } finally { Pop-Location }
+    try {
+        npx prisma generate
+        if ($LASTEXITCODE -ne 0) { throw 'prisma generate 失败，请检查是否有进程占用 Prisma 引擎文件' }
+    } finally { Pop-Location }
 }
 
 # ---------- 3. PostgreSQL ----------
