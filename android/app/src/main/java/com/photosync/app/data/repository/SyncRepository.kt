@@ -72,8 +72,15 @@ class SyncRepository(
 
     suspend fun spaceIds(): List<String> = spaceDao.getAll().map { it.id }
 
-    suspend fun activeMappings(spaceId: String, deviceId: String): List<LocalFolderMapping> =
-        mappingDao.getBySpaceAndDevice(spaceId, deviceId).filter { it.status == MappingStatus.ACTIVE }
+    /**
+     * 参与同步的映射。ERROR 也参与：每次同步重试扫描（成功即自动恢复 ACTIVE），
+     * 否则一次扫描异常会让目录永久退出同步，队列中的下载任务永远不被执行。
+     * ACCESS_REVOKED 不参与，需用户重新授权。
+     */
+    suspend fun syncMappings(spaceId: String, deviceId: String): List<LocalFolderMapping> =
+        mappingDao.getBySpaceAndDevice(spaceId, deviceId).filter {
+            it.status == MappingStatus.ACTIVE || it.status == MappingStatus.ERROR
+        }
 
     suspend fun mapping(mappingId: String): LocalFolderMapping? = mappingDao.getById(mappingId)
 
@@ -123,7 +130,7 @@ class SyncRepository(
     suspend fun recoverRunning(spaceId: String) =
         taskDao.recoverRunning(spaceId, System.currentTimeMillis())
 
-    /** 恢复上次同步被中断后停留在“扫描中”的映射，否则它会被 activeMappings 过滤而永不参与同步。 */
+    /** 恢复上次同步被中断后停留在“扫描中”的映射，否则它会被 syncMappings 过滤而永不参与同步。 */
     suspend fun recoverScanning(spaceId: String) = mappingDao.recoverScanning(spaceId)
 
     /** 失败处理补建任务前，移除同一路径上的旧活动任务，避免新任务被去重逻辑跳过。 */
@@ -137,6 +144,10 @@ class SyncRepository(
     /** 不依赖远端事件的独立下载任务（失败处理「云端优先」补建）。 */
     suspend fun nextStandaloneDownload(spaceId: String): LocalSyncTask? =
         taskDao.nextStandaloneDownload(spaceId)
+
+    /** 队列直跑（「刷新」）用：任意待执行下载任务（含事件驱动任务）。 */
+    suspend fun nextQueuedDownload(spaceId: String): LocalSyncTask? =
+        taskDao.nextQueuedDownload(spaceId)
 
     /** 仍有未完成任务（待执行/进行中/重试/失败）的远端路径。 */
     suspend fun activeRemotePaths(spaceId: String): List<String> =

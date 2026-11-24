@@ -150,6 +150,7 @@ export interface FolderMappingRecord {
 export interface SyncFileRecord {
   id: string;
   relativePath: string;
+  objectId: string;
   size: bigint;
   sha256: string;
   version: number;

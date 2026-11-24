@@ -482,7 +482,7 @@ export class PrismaSpaceRepository implements SpaceRepository {
   async listActiveFiles(spaceId: string): Promise<SyncFileRecord[]> {
     return this.prisma.syncFile.findMany({
       where: { spaceId, isDeleted: false },
-      select: { id: true, relativePath: true, size: true, sha256: true, version: true },
+      select: { id: true, relativePath: true, objectId: true, size: true, sha256: true, version: true },
       orderBy: { relativePath: 'asc' },
     });
   }

@@ -61,16 +61,63 @@ class SyncEngine(
         return result
     }
 
+    /**
+     * 仅执行队列中已存在的任务（下载/上传/变更），与完整同步严格区分：
+     * 不做本地扫描、不规划新任务、不拉取远端事件，失败任务也不重排（由用户显式处理）。
+     * 供「刷新」按钮使用，成本低、可频繁触发。
+     */
+    suspend fun runQueuedTasks(): SyncRunResult {
+        val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
+        var result = SyncRunResult.SUCCESS
+        for (spaceId in repository.spaceIds()) {
+            repository.recoverRunning(spaceId)
+            var taskFailed = false
+            while (true) {
+                val task = repository.nextQueuedDownload(spaceId) ?: break
+                when (downloadStandaloneTask(spaceId, deviceId, task)) {
+                    SyncRunResult.SUCCESS -> Unit
+                    SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                    SyncRunResult.FAILURE -> taskFailed = true
+                }
+            }
+            while (true) {
+                val task = repository.nextPendingUpload(spaceId) ?: break
+                when (upload(task)) {
+                    SyncRunResult.SUCCESS -> Unit
+                    SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                    SyncRunResult.FAILURE -> taskFailed = true
+                }
+            }
+            while (true) {
+                val task = repository.nextPendingMutation(spaceId) ?: break
+                when (commitMutation(task)) {
+                    SyncRunResult.SUCCESS -> Unit
+                    SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                    SyncRunResult.FAILURE -> taskFailed = true
+                }
+            }
+            if (taskFailed && result == SyncRunResult.SUCCESS) result = SyncRunResult.FAILURE
+        }
+        return result
+    }
+
     suspend fun syncSpace(spaceId: String): SyncRunResult {
         val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
         repository.recoverRunning(spaceId)
         repository.recoverScanning(spaceId)
-        val mappings = repository.activeMappings(spaceId, deviceId)
-        try {
-            for (mapping in mappings) {
+        val mappings = repository.syncMappings(spaceId, deviceId)
+        // 扫描/规划失败只影响该目录的本地变更规划；下载、上传等既有队列照常执行。
+        // 否则一次扫描异常会中断整轮同步，队列中的下载任务永远不被执行。
+        var planFailed = false
+        var planRetry = false
+        for (mapping in mappings) {
+            try {
                 val oldIndex = repository.files(mapping.id)
                 when (val scan = repository.scanMapping(mapping.id)) {
-                    is ApiResult.Failure -> return SyncRunResult.FAILURE
+                    is ApiResult.Failure -> {
+                        planFailed = true
+                        continue
+                    }
                     is ApiResult.Success -> Unit
                 }
                 val newIndex = repository.files(mapping.id)
@@ -81,7 +128,10 @@ class SyncEngine(
                 val freshlyBound = oldIndex.isEmpty() && newIndex.isNotEmpty()
                 if (freshlyBound) {
                     when (reconcileFreshMapping(mapping, newIndex)) {
-                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                        SyncRunResult.RETRY -> {
+                            planRetry = true
+                            continue
+                        }
                         else -> Unit
                     }
                     current = repository.files(mapping.id)
@@ -94,15 +144,15 @@ class SyncEngine(
                 // 用于修复历史「云端优先」未生成下载任务造成的本地缺失（新建空目录不自动拉全量）。
                 if (!freshlyBound && current.isNotEmpty()) {
                     when (reconcileMissingDownloads(mapping, current.map { it.relativePath }.toSet())) {
-                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                        SyncRunResult.RETRY -> planRetry = true
                         else -> Unit
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                planFailed = true
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            return SyncRunResult.FAILURE
         }
 
         var taskFailed = false
@@ -135,7 +185,8 @@ class SyncEngine(
         val pulled = pullChanges(spaceId, deviceId, mappings)
         return when {
             pulled != SyncRunResult.SUCCESS -> pulled
-            taskFailed -> SyncRunResult.FAILURE
+            taskFailed || planFailed -> SyncRunResult.FAILURE
+            planRetry -> SyncRunResult.RETRY
             else -> SyncRunResult.SUCCESS
         }
     }
@@ -897,8 +948,9 @@ class SyncEngine(
             repository.markTaskFailed(task, "MAPPING_NOT_FOUND", "本地目录映射已不存在，请重新绑定")
             return SyncRunResult.FAILURE
         }
-        if (mapping.status != MappingStatus.ACTIVE) {
-            // 目录正在扫描或暂时不可用（例如另一轮同步正在扫描）：保留任务，下次同步继续，不判失败
+        if (mapping.status != MappingStatus.ACTIVE && mapping.status != MappingStatus.ERROR) {
+            // 目录正在扫描或授权失效：保留任务，下次同步继续，不判失败。
+            // ERROR 映射仍可下载：扫描失败只阻塞本地变更规划，不阻塞写入云端文件。
             repository.markTaskRetry(task, "MAPPING_BUSY", "本地目录正在扫描或暂不可用，稍后自动重试")
             return SyncRunResult.SUCCESS
         }
@@ -1430,31 +1482,109 @@ class SyncEngine(
             if (current.objectId.isBlank() || current.version <= 0 || currentSha.isNullOrBlank()) {
                 return "云端版本信息无效"
             }
-            // 本地文件可能已不存在：缺失时直接重建下载即可
-            fileStore.findTarget(mapping, file.relativePath)?.let {
-                if (!fileStore.moveToTrash(mapping, file.relativePath)) {
-                    return "本地文件无法移入回收站"
-                }
-            }
-            repository.transaction {
-                repository.removeActiveTasksForPath(mapping.spaceId, mapping.id, file.relativePath)
-                repository.deleteIndex(file.mappingId, file.relativePath)
-                repository.enqueueFileDownloadTask(
-                    spaceId = mapping.spaceId,
-                    mappingId = mapping.id,
-                    localPath = file.relativePath,
-                    fileId = fileId,
-                    objectId = current.objectId,
-                    size = current.size.toLongOrNull() ?: 0L,
-                    sha256 = currentSha
-                )
-            }
-            null
+            applyKeepCloud(file, mapping, fileId, current.objectId, current.size.toLongOrNull() ?: 0L, currentSha)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             e.message ?: "处理失败"
         }
+    }
+
+    /**
+     * 批量失败处理「保留云端」：每个映射一次 scanManifest 拉取远端清单（含 objectId），
+     * 其余全部本地处理（移回收站、清索引、补建下载任务），不再逐条请求后端。
+     * 返回与入参对齐的错误信息，null 表示成功；清单未命中或拉取失败时回退单文件流程。
+     */
+    suspend fun resolveKeepCloudAll(files: List<LocalFileIndex>): List<String?> {
+        val errors = arrayOfNulls<String>(files.size)
+        val deviceId = repository.currentDeviceId()
+        if (deviceId == null) {
+            files.indices.forEach { errors[it] = "设备未注册" }
+            return errors.toList()
+        }
+        files.withIndex().groupBy { it.value.mappingId }.forEach { (mappingId, group) ->
+            val mapping = repository.mapping(mappingId)
+            if (mapping == null) {
+                group.forEach { (index, _) -> errors[index] = "映射不存在" }
+                return@forEach
+            }
+            val manifest = when (
+                val result = apiCall {
+                    api.scanManifest(
+                        mapping.spaceId,
+                        ScanManifestRequest(
+                            deviceId = deviceId,
+                            mappingId = mapping.id,
+                            scanComplete = true,
+                            files = emptyList()
+                        )
+                    )
+                }
+            ) {
+                is ApiResult.Failure -> {
+                    // 清单拉取失败：回退单文件流程，保留原始错误语义
+                    group.forEach { (index, file) -> errors[index] = resolveFileKeepCloud(file) }
+                    return@forEach
+                }
+                is ApiResult.Success -> result.data.remoteFiles
+            }
+            val byPath = manifest.associateBy { it.relativePath }
+            val byFileId = manifest.associateBy { it.fileId }
+            group.forEach { (index, file) ->
+                // 与单文件流程同语义：有云端 ID 按文件查，无则按路径查占用者
+                val remote = if (file.remoteFileId != null) {
+                    byFileId[file.remoteFileId]
+                } else {
+                    byPath[file.relativePath]
+                }
+                errors[index] = if (remote == null) {
+                    // 清单未命中（超过 10000 条截断、onlyMedia 过滤等）：回退单文件流程
+                    resolveFileKeepCloud(file)
+                } else {
+                    val remoteSha = remote.sha256
+                    val remoteObjectId = remote.objectId
+                    if (remoteObjectId.isNullOrBlank() || remote.version <= 0 || remoteSha.isNullOrBlank()) {
+                        "云端版本信息无效"
+                    } else {
+                        applyKeepCloud(file, mapping, remote.fileId, remoteObjectId, remote.size, remoteSha)
+                    }
+                }
+            }
+        }
+        return errors.toList()
+    }
+
+    /**
+     * 「保留云端」共享的本地收尾：本地文件移入应用回收站、清索引、补建下载任务。
+     * 本地文件可能已不存在：缺失时直接重建下载即可。
+     */
+    private suspend fun applyKeepCloud(
+        file: LocalFileIndex,
+        mapping: LocalFolderMapping,
+        fileId: String,
+        objectId: String,
+        size: Long,
+        sha256: String
+    ): String? {
+        fileStore.findTarget(mapping, file.relativePath)?.let {
+            if (!fileStore.moveToTrash(mapping, file.relativePath)) {
+                return "本地文件无法移入回收站"
+            }
+        }
+        repository.transaction {
+            repository.removeActiveTasksForPath(mapping.spaceId, mapping.id, file.relativePath)
+            repository.deleteIndex(file.mappingId, file.relativePath)
+            repository.enqueueFileDownloadTask(
+                spaceId = mapping.spaceId,
+                mappingId = mapping.id,
+                localPath = file.relativePath,
+                fileId = fileId,
+                objectId = objectId,
+                size = size,
+                sha256 = sha256
+            )
+        }
+        return null
     }
 
     /**

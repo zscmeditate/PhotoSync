@@ -65,6 +65,10 @@ class SpaceDetailViewModel(
     private val _resolvingTaskId = MutableStateFlow<String?>(null)
     val resolvingTaskId: StateFlow<String?> = _resolvingTaskId.asStateFlow()
 
+    /** 正在批量按云端优先处理重名失败任务。 */
+    private val _resolvingAllDuplicateNames = MutableStateFlow(false)
+    val resolvingAllDuplicateNames: StateFlow<Boolean> = _resolvingAllDuplicateNames.asStateFlow()
+
     /** 任务列表失败详情弹层状态：点击失败任务的「处理」后加载云端/本地文件信息。 */
     private val _taskFailureDetail = MutableStateFlow<FailureDetailUi?>(null)
     val taskFailureDetail: StateFlow<FailureDetailUi?> = _taskFailureDetail.asStateFlow()
@@ -140,6 +144,50 @@ class SpaceDetailViewModel(
             } else {
                 _messages.emit("处理失败：$error")
             }
+        }
+    }
+
+    /** 批量处理所有重名失败任务：保留云端版本并重新下载，其他失败类型不受影响。 */
+    fun resolveAllDuplicateNamesKeepCloud() {
+        if (_resolvingTaskId.value != null || _resolvingAllDuplicateNames.value) return
+        val duplicateTasks = tasks.value
+            .filter {
+                it.state == SyncTaskState.FAILED &&
+                    it.error?.substringBefore('：') == "FILE_ALREADY_EXISTS"
+            }
+            .distinctBy { it.mappingId to it.localRelativePath }
+        if (duplicateTasks.isEmpty()) {
+            showMessage("没有重名失败任务")
+            return
+        }
+        viewModelScope.launch {
+            _resolvingAllDuplicateNames.value = true
+            var resolved = 0
+            var failed = 0
+            try {
+                // 批量「保留云端」：每个映射一次 scanManifest 拉远端清单，其余全本地处理，
+                // 不再逐条 getFileByPath/getFileVersions 往返后端
+                val indexes = duplicateTasks.map { syncEngine.taskFailureIndex(it) }
+                val errors = syncEngine.resolveKeepCloudAll(indexes)
+                duplicateTasks.forEachIndexed { index, task ->
+                    if (errors[index] == null) {
+                        syncRepository.cancelTask(task.id)
+                        resolved++
+                    } else {
+                        failed++
+                    }
+                }
+            } finally {
+                _resolvingAllDuplicateNames.value = false
+            }
+            if (resolved > 0) scheduleSync()
+            _messages.emit(
+                if (failed == 0) {
+                    "已将 $resolved 个重名任务设为云端优先，将重新下载"
+                } else {
+                    "已处理 $resolved 个重名任务，$failed 个处理失败"
+                }
+            )
         }
     }
 
@@ -253,6 +301,19 @@ class SpaceDetailViewModel(
         }
         // 兜底：ViewModel 被销毁时 WorkManager 会接管
         scheduleSync()
+    }
+
+    /** 刷新：仅执行队列中已存在的任务（下载/上传/变更），不扫描、不拉取新变更，与「立即同步」区分。 */
+    fun runQueuedTasks() {
+        viewModelScope.launch {
+            val result = syncEngine.runQueuedTasks()
+            val msg = when (result) {
+                SyncRunResult.SUCCESS -> "队列任务已处理完成"
+                SyncRunResult.RETRY -> "暂时无法执行，请稍后重试"
+                SyncRunResult.FAILURE -> "部分任务执行失败，请查看任务详情"
+            }
+            _messages.emit(msg)
+        }
     }
 
     /** 重新排队单个任务（待处理/等待重试/失败均可重试）。 */

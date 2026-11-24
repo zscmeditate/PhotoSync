@@ -218,10 +218,11 @@ const scanResultSchema = {
       maxItems: 10000,
       items: {
         type: 'object',
-        required: ['fileId', 'relativePath', 'size', 'sha256', 'version'],
+        required: ['fileId', 'relativePath', 'objectId', 'size', 'sha256', 'version'],
         properties: {
           fileId: { type: 'string' },
           relativePath: { type: 'string' },
+          objectId: { type: 'string' },
           size: { type: 'number' },
           sha256: { type: 'string' },
           version: { type: 'integer' },

@@ -150,57 +150,55 @@ private fun ActivityRow(task: LocalSyncTask) {
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Icon(
-                imageVector = TaskPresentation.typeIcon(task.type),
-                contentDescription = null,
-                tint = PrimaryBlue,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            // 第一行：图标 + 类型 + 标题（文件名，超长省略）+ 状态
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = TaskPresentation.typeIcon(task.type),
+                    contentDescription = null,
+                    tint = PrimaryBlue,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
                 Text(
                     text = TaskPresentation.typeLabel(task.type),
                     fontWeight = FontWeight.SemiBold
                 )
-                // 文件名单独一行完整显示（不省略），长文件名自动换行
+                Spacer(Modifier.width(8.dp))
                 Text(
                     text = TaskPresentation.displayName(task.remoteRelativePath),
                     style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-                Text(
-                    text = task.remoteRelativePath,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = OnSurfaceMuted,
+                    modifier = Modifier.weight(1f),
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 2.dp)
+                    overflow = TextOverflow.Ellipsis
                 )
-                if (error != null) {
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ErrorRed,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.width(8.dp))
-            Column(horizontalAlignment = Alignment.End) {
+                Spacer(Modifier.width(8.dp))
                 Text(
                     text = TaskPresentation.stateLabel(task.state),
                     style = MaterialTheme.typography.bodySmall,
                     color = color,
                     fontWeight = FontWeight.SemiBold
                 )
+            }
+            // 第二行：完整文件名（含路径，不省略，长名自动换行）
+            Text(
+                text = task.remoteRelativePath,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            // 第三行：时间
+            Text(
+                text = TaskPresentation.formatTime(task.updatedAt),
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            if (error != null) {
                 Text(
-                    text = TaskPresentation.formatTime(task.updatedAt),
+                    text = error,
                     style = MaterialTheme.typography.bodySmall,
-                    color = OnSurfaceMuted
+                    color = ErrorRed,
+                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
         }

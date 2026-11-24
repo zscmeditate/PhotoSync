@@ -195,7 +195,8 @@ interface LocalSyncTaskDao {
 
     /**
      * 不依赖远端事件的独立下载任务（失败处理「云端优先」补建），按创建顺序取出执行。
-     * 仅取目录处于 ACTIVE 的任务：目录正在扫描/暂不可用时先跳过，避免误判为失败。
+     * ERROR 映射也参与：扫描失败只阻塞本地变更规划，不阻塞写入云端文件；
+     * 目录正在扫描时先跳过，避免扫描期间写入干扰索引。
      */
     @Query(
         """
@@ -203,11 +204,26 @@ interface LocalSyncTaskDao {
         JOIN local_folder_mappings m ON m.id = t.mappingId
         WHERE t.spaceId = :spaceId AND t.type = 'DOWNLOAD' AND t.state IN ('PENDING', 'RETRY')
           AND (t.eventRevision IS NULL OR t.eventRevision = '')
-          AND m.status = 'ACTIVE'
+          AND m.status IN ('ACTIVE', 'ERROR')
         ORDER BY t.createdAt ASC, t.id ASC LIMIT 1
         """
     )
     suspend fun nextStandaloneDownload(spaceId: String): LocalSyncTask?
+
+    /**
+     * 队列直跑（「刷新」）用：取出任意待执行下载任务（含事件驱动任务）。
+     * 事件任务提前完成后，pullChanges 处理到对应事件时按“已完成”确认游标，不会重复下载。
+     */
+    @Query(
+        """
+        SELECT t.* FROM local_sync_tasks t
+        JOIN local_folder_mappings m ON m.id = t.mappingId
+        WHERE t.spaceId = :spaceId AND t.type = 'DOWNLOAD' AND t.state IN ('PENDING', 'RETRY')
+          AND m.status IN ('ACTIVE', 'ERROR')
+        ORDER BY t.createdAt ASC, t.id ASC LIMIT 1
+        """
+    )
+    suspend fun nextQueuedDownload(spaceId: String): LocalSyncTask?
 
     /** 该空间下仍有进行中/失败任务（未处理完）的远端路径，补齐缺失文件时要跳过。 */
     @Query(

@@ -119,6 +119,7 @@ fun SpaceDetailScreen(
     val taskFailureDetail by viewModel.taskFailureDetail.collectAsStateWithLifecycle()
     val detailTask by viewModel.detailTask.collectAsStateWithLifecycle()
     val resolvingTaskId by viewModel.resolvingTaskId.collectAsStateWithLifecycle()
+    val resolvingAllDuplicateNames by viewModel.resolvingAllDuplicateNames.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -158,6 +159,12 @@ fun SpaceDetailScreen(
     }
     val successCount = remember(tasks) { tasks.count { it.state == SyncTaskState.COMPLETED } }
     val failedCount = remember(tasks) { tasks.count { it.state == SyncTaskState.FAILED } }
+    val duplicateNameFailedCount = remember(tasks) {
+        tasks.count {
+            it.state == SyncTaskState.FAILED &&
+                it.error?.substringBefore('：') == "FILE_ALREADY_EXISTS"
+        }
+    }
 
     val directoryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -195,8 +202,8 @@ fun SpaceDetailScreen(
                     if (loading) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                     } else {
-                        IconButton(onClick = viewModel::refresh) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "刷新空间")
+                        IconButton(onClick = { viewModel.refresh(); viewModel.runQueuedTasks() }) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "刷新并执行待办任务")
                         }
                     }
                     // 只有管理员（owner/admin；本账号主设备自动具备管理员角色）才可以重命名空间
@@ -335,7 +342,24 @@ fun SpaceDetailScreen(
                             )
                         }
                     }
-                    item { SectionHeader(title = "同步任务") }
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("同步任务", style = MaterialTheme.typography.titleMedium)
+                            if (failedCount > 0) {
+                                TextButton(
+                                    onClick = viewModel::retryAllFailed,
+                                    enabled = resolvingTaskId == null && !resolvingAllDuplicateNames,
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Text("全部重试", color = PrimaryBlue, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                        }
+                    }
                     item {
                         SpaceTaskSummaryCard(stats = syncStats)
                     }
@@ -367,13 +391,17 @@ fun SpaceDetailScreen(
                                 )
                             }
                             Spacer(Modifier.weight(1f))
-                            if (failedCount > 0) {
+                            if (taskFilter == TaskFilter.FAILED && duplicateNameFailedCount > 0) {
                                 TextButton(
-                                    onClick = viewModel::retryAllFailed,
-                                    enabled = resolvingTaskId == null,
+                                    onClick = viewModel::resolveAllDuplicateNamesKeepCloud,
+                                    enabled = resolvingTaskId == null && !resolvingAllDuplicateNames,
                                     contentPadding = PaddingValues(horizontal = 8.dp)
                                 ) {
-                                    Text("全部重试", color = PrimaryBlue, style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        if (resolvingAllDuplicateNames) "处理中…" else "全部云端优先",
+                                        color = PrimaryBlue,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
                                 }
                             }
                             if (taskFilter == TaskFilter.SUCCESS && successCount > 0) {

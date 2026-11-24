@@ -130,6 +130,7 @@ export interface ScanManifestResult {
   remoteFiles: Array<{
     fileId: string;
     relativePath: string;
+    objectId: string;
     size: number;
     sha256: string;
     version: number;
@@ -570,6 +571,7 @@ export class SpaceService {
       remoteFiles: remoteFiles.slice(0, MAX_REMOTE_FILES).map((file) => ({
         fileId: file.id,
         relativePath: file.relativePath,
+        objectId: file.objectId,
         size: Number(file.size),
         sha256: file.sha256,
         version: file.version,

@@ -239,6 +239,7 @@ data class ScanSummary(
 data class RemoteFileDto(
     val fileId: String,
     val relativePath: String,
+    val objectId: String? = null,
     val size: Long,
     val sha256: String? = null,
     val version: Int = 1
