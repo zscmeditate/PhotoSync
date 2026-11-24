@@ -1168,8 +1168,43 @@ class SyncEngine(
                 ?: return "本地文件已不存在，可改用「删除」"
             if (!target.isFile) return "本地路径不是文件"
             val digest = fileStore.digest(target)
+            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
             val fileId = file.remoteFileId
             if (fileId == null) {
+                // 从未上传成功：先按路径查询云端占用者。路径已被其他文件占用时改为覆盖上传，
+                // 否则新文件上传会再次被服务端 FILE_ALREADY_EXISTS 拒绝，形成死循环。
+                val occupant = when (
+                    val result = apiCall { api.getFileByPath(mapping.spaceId, deviceId, file.relativePath) }
+                ) {
+                    is ApiResult.Success -> result.data.file
+                    is ApiResult.Failure -> return "查询云端文件失败：${result.message}"
+                }
+                val occupantFileId = occupant?.fileId
+                if (occupantFileId != null) {
+                    val now = System.currentTimeMillis()
+                    repository.transaction {
+                        repository.upsertIndex(
+                            file.copy(
+                                status = FileSyncStatus.PENDING_UPLOAD,
+                                size = digest.size,
+                                sha256 = digest.sha256,
+                                remoteFileId = occupantFileId,
+                                remoteVersion = occupant.version
+                            )
+                        )
+                        repository.enqueueOverwriteUpload(
+                            spaceId = mapping.spaceId,
+                            mapping = mapping,
+                            localPath = file.relativePath,
+                            size = digest.size,
+                            sha256 = digest.sha256,
+                            baseVersion = occupant.version,
+                            fileId = occupantFileId,
+                            now = now
+                        )
+                    }
+                    return null
+                }
                 repository.transaction {
                     repository.upsertIndex(
                         file.copy(
@@ -1188,7 +1223,6 @@ class SyncEngine(
                 }
                 return null
             }
-            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
             val versions = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
                 is ApiResult.Failure -> return "查询云端版本失败：${result.message}"
                 is ApiResult.Success -> result.data
@@ -1232,7 +1266,16 @@ class SyncEngine(
         return try {
             val deviceId = repository.currentDeviceId() ?: return "设备未注册"
             val mapping = repository.mapping(file.mappingId) ?: return "映射不存在"
-            val fileId = file.remoteFileId ?: return "缺少云端文件标识"
+            var fileId = file.remoteFileId
+            if (fileId == null) {
+                // 上传失败的任务没有云端 ID：按路径查询当前占用该路径的云端文件
+                fileId = when (
+                    val result = apiCall { api.getFileByPath(mapping.spaceId, deviceId, file.relativePath) }
+                ) {
+                    is ApiResult.Success -> result.data.file?.fileId
+                    is ApiResult.Failure -> return "查询云端文件失败：${result.message}"
+                } ?: return "云端暂无此路径的文件，可改用「本地」或「删除」"
+            }
             val versions = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
                 is ApiResult.Failure -> return "查询云端版本失败：${result.message}"
                 is ApiResult.Success -> result.data
@@ -1320,20 +1363,35 @@ class SyncEngine(
         }?.takeIf { it.isFile }
         val localSize = target?.length()
         val localModifiedAt = target?.lastModified()
-        val fileId = file.remoteFileId
         val deviceId = repository.currentDeviceId()
         var cloud: CloudVersionInfo? = null
         var cloudError: String? = null
-        if (fileId != null && deviceId != null) {
-            when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
-                is ApiResult.Success -> result.data.versions.firstOrNull()?.let {
-                    cloud = CloudVersionInfo(
-                        version = it.version,
-                        size = it.size.toLongOrNull() ?: 0L,
-                        createdAtIso = it.createdAt
-                    )
+        if (deviceId != null) {
+            val fileId = file.remoteFileId
+            if (fileId != null) {
+                when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
+                    is ApiResult.Success -> result.data.versions.firstOrNull()?.let {
+                        cloud = CloudVersionInfo(
+                            version = it.version,
+                            size = it.size.toLongOrNull() ?: 0L,
+                            createdAtIso = it.createdAt
+                        )
+                    }
+                    is ApiResult.Failure -> cloudError = result.message
                 }
-                is ApiResult.Failure -> cloudError = result.message
+            } else if (mapping != null) {
+                // 上传失败的任务从未产生云端 ID：按路径查询当前占用该路径的云端文件
+                //（通常是其他设备先上传的同名文件），避免误导为“云端暂无文件”。
+                when (val result = apiCall { api.getFileByPath(mapping.spaceId, deviceId, file.relativePath) }) {
+                    is ApiResult.Success -> result.data.file?.let {
+                        cloud = CloudVersionInfo(
+                            version = it.version,
+                            size = it.size.toLongOrNull() ?: 0L,
+                            createdAtIso = it.createdAt
+                        )
+                    }
+                    is ApiResult.Failure -> cloudError = result.message
+                }
             }
         }
         return FileFailureInfo(

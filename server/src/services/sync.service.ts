@@ -470,6 +470,18 @@ export class SyncService {
     return { versions: versions.map(toVersionDto) };
   }
 
+  /** 按相对路径查询当前占用该路径的云端文件；未占用时返回 null。用于上传冲突的详情展示与处理。 */
+  async findFileByPath(
+    userId: string,
+    spaceId: string,
+    deviceId: string,
+    relativePath: string,
+  ): Promise<{ file: FileDto | null }> {
+    await this.requireSpaceDevice(userId, spaceId, deviceId);
+    const file = await this.deps.sync.findFileByPath(spaceId, relativePath);
+    return { file: file ? toFileDto(file) : null };
+  }
+
   async listConflicts(
     userId: string,
     spaceId: string,

@@ -250,6 +250,13 @@ interface ApiService {
         @Query("deviceId") deviceId: String
     ): Response<FileVersionsResponse>
 
+    @GET("api/v1/spaces/{spaceId}/files/by-path")
+    suspend fun getFileByPath(
+        @Path("spaceId") spaceId: String,
+        @Query("deviceId") deviceId: String,
+        @Query("relativePath") relativePath: String
+    ): Response<FileByPathResponse>
+
     // ---------- trash ----------
 
     @GET("api/v1/spaces/{spaceId}/trash")

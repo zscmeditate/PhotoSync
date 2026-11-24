@@ -52,6 +52,14 @@ const ackBodySchema = z.object({
   deviceId: uuidSchema,
   lastAppliedRevision: z.string().regex(/^[0-9]+$/),
 });
+const fileByPathQuerySchema = z.object({
+  deviceId: uuidSchema,
+  relativePath: z
+    .string()
+    .min(1)
+    .max(512)
+    .regex(relativePathPattern, 'relativePath is not a safe relative path'),
+});
 
 const spaceParams = {
   type: 'object',
@@ -340,6 +348,49 @@ const syncRoutes: FastifyPluginAsync<SyncRoutesOptions> = async (app, opts) => {
           `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(result.metadata.fileName)}`,
         );
       return reply.send(result.content.body);
+    },
+  );
+
+  app.get(
+    '/spaces/:spaceId/files/by-path',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['files'],
+        summary: '按相对路径查询当前占用该路径的云端文件（未占用返回 null）',
+        security: bearerSecurity,
+        params: spaceParams,
+        querystring: {
+          type: 'object',
+          required: ['deviceId', 'relativePath'],
+          additionalProperties: false,
+          properties: {
+            deviceId: { type: 'string' },
+            relativePath: { type: 'string', minLength: 1, maxLength: 512 },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            required: ['file'],
+            additionalProperties: false,
+            properties: {
+              file: { ...fileDtoSchema, nullable: true },
+            },
+          },
+          ...commonErrors,
+        },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const spaceId = spaceIdOf(request.params);
+      const query = parse(fileByPathQuerySchema, request.query);
+      return opts.syncService.findFileByPath(
+        authUserId(request),
+        spaceId,
+        query.deviceId,
+        query.relativePath,
+      );
     },
   );
 

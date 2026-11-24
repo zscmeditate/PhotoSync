@@ -424,6 +424,10 @@ data class RemoteFileVersionDto(
 @Serializable
 data class FileVersionsResponse(val versions: List<RemoteFileVersionDto> = emptyList())
 
+/** 按路径查询云端占用文件的响应；file = null 表示该路径当前未被占用。 */
+@Serializable
+data class FileByPathResponse(val file: RemoteFileVersionDto? = null)
+
 // ---------- trash ----------
 
 @Serializable

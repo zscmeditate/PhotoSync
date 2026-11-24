@@ -680,10 +680,12 @@ private fun SyncTaskCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = task.remoteRelativePath,
+                    text = TaskPresentation.displayName(task.remoteRelativePath),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Icon(
                     imageVector = TaskPresentation.stateIcon(task.state),
@@ -699,6 +701,12 @@ private fun SyncTaskCard(
                     fontWeight = FontWeight.SemiBold
                 )
             }
+            Text(
+                text = task.remoteRelativePath,
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(top = 2.dp)
+            )
             Text(
                 text = buildString {
                     append(TaskPresentation.typeLabel(task.type))

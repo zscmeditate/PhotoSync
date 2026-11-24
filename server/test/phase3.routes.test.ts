@@ -496,4 +496,36 @@ describe('Phase 3 新增文件同步 HTTP 流程', () => {
     expect(malformedFile.statusCode).toBe(404);
     expect(errorCode(malformedFile.json())).toBe('FILE_NOT_FOUND');
   });
+
+  it('按路径查询云端占用文件：命中返回 file，未占用返回 null，非法路径返回 400', async () => {
+    const content = Buffer.from('occupied path');
+    const upload = await uploadAll('Camera/by-path.bin', content, 'upload-by-path');
+    await commitOperation(upload.uploadId, 'operation-by-path');
+
+    const hit = await app.inject({
+      method: 'GET',
+      url: `/api/v1/spaces/${spaceId}/files/by-path?deviceId=${deviceB.id}&relativePath=Camera/by-path.bin`,
+      headers: auth,
+    });
+    expect(hit.statusCode).toBe(200);
+    expect(hit.json()).toMatchObject({
+      file: { relativePath: 'Camera/by-path.bin', version: 1, size: '13' },
+    });
+
+    const miss = await app.inject({
+      method: 'GET',
+      url: `/api/v1/spaces/${spaceId}/files/by-path?deviceId=${deviceB.id}&relativePath=Camera/none.bin`,
+      headers: auth,
+    });
+    expect(miss.statusCode).toBe(200);
+    expect(miss.json()).toEqual({ file: null });
+
+    const illegal = await app.inject({
+      method: 'GET',
+      url: `/api/v1/spaces/${spaceId}/files/by-path?deviceId=${deviceB.id}&relativePath=../etc/passwd`,
+      headers: auth,
+    });
+    expect(illegal.statusCode).toBe(400);
+    expect(errorCode(illegal.json())).toBe('VALIDATION_ERROR');
+  });
 });
