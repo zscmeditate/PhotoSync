@@ -118,6 +118,29 @@ describe('SpaceService 空间创建、列表与详情', () => {
     expect(spaces.cursors.get(`${space.id}:${device.id}`)?.lastAppliedRevision).toBe(0n);
   });
 
+  it('创建空间不会自动加入同账号其他设备，其他设备以 none 角色可见并需申请审批', async () => {
+    const { service, devices, spaces } = makeService();
+    const primary = await addDevice(devices, 'user-1');
+    const secondary = await devices.create({
+      userId: 'user-1',
+      deviceName: 'Tablet',
+      platform: 'android',
+      credentialStatus: 'active',
+      lastSeenAt: NOW,
+    });
+
+    const space = await service.createSpace('user-1', { name: 'Shared', deviceId: primary.id });
+
+    expect(space.memberCount).toBe(1);
+    expect(await spaces.findMember(space.id, secondary.id)).toBeNull();
+    expect((await service.listSpaces('user-1', secondary.id)).find((item) => item.id === space.id)?.role)
+      .toBe('none');
+
+    const applied = await service.requestToJoinSpace('user-1', space.id, secondary.id);
+    expect(applied.joined).toBe(false);
+    expect(applied.request).toMatchObject({ deviceId: secondary.id, status: 'pending' });
+  });
+
   it('拒绝他人设备和已吊销设备', async () => {
     const { service, devices } = makeService();
     const other = await addDevice(devices, 'user-2');
@@ -185,6 +208,9 @@ describe('SpaceService 空间创建、列表与详情', () => {
     expect(detail.members).toHaveLength(2);
     expect(detail.members.find((member) => member.deviceId === device.id)?.online).toBe(true);
     expect(detail.members.find((member) => member.deviceId === offline.id)?.online).toBe(false);
+    // 主设备在成员列表中必须显示为管理员，其余为成员
+    expect(detail.members.find((member) => member.deviceId === device.id)?.role).toBe('admin');
+    expect(detail.members.find((member) => member.deviceId === offline.id)?.role).toBe('member');
     expect(spaces.members.size).toBe(2);
 
     await expectAppError(() => service.getSpace('stranger', space.id), 403, 'SPACE_FORBIDDEN');

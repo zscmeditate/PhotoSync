@@ -237,15 +237,9 @@ export class SpaceService {
       description: input.description ?? null,
       deviceId: input.deviceId,
     });
-    // 自动把同账号所有已注册设备都加为成员（每个设备确保有独立 SyncCursor）。
-    // 用户在一台主设备创建空间后，所有同账号设备立即可见并参与同步。
-    const allDevices = await this.deps.devices.listByUser(userId);
-    for (const device of allDevices) {
-      if (device.id === input.deviceId) continue; // 创建时已自动加入
-      await this.deps.spaces.addMember(space.id, device.id);
-    }
-    const memberCount = allDevices.length;
-    return this.toSpaceDto(space, 'admin', memberCount, 0);
+    // 其他同账号设备不会自动加入：它们在「加入空间」中能看到该空间（role=none），
+    // 需主动提交加入申请，由主设备审批通过后才成为成员并绑定目录。
+    return this.toSpaceDto(space, 'admin', 1, 0);
   }
 
   async listSpaces(userId: string, deviceId?: string): Promise<SpaceDto[]> {
