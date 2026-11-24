@@ -119,6 +119,8 @@ fun SpaceDetailScreen(
     val taskFailureDetail by viewModel.taskFailureDetail.collectAsStateWithLifecycle()
     val detailTask by viewModel.detailTask.collectAsStateWithLifecycle()
     val resolvingTaskId by viewModel.resolvingTaskId.collectAsStateWithLifecycle()
+    val syncing by viewModel.syncing.collectAsStateWithLifecycle()
+    val syncPhase by viewModel.syncPhase.collectAsStateWithLifecycle()
     val resolvingAllDuplicateNames by viewModel.resolvingAllDuplicateNames.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
@@ -199,7 +201,8 @@ fun SpaceDetailScreen(
                 title = space?.name ?: "空间详情",
                 onBack = onBack,
                 actions = {
-                    if (loading) {
+                    if (loading || syncing) {
+                        // 刷新中（含执行队列任务）显示转圈，且不可再点，避免无反馈的重复点击
                         CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                     } else {
                         IconButton(onClick = { viewModel.refresh(); viewModel.runQueuedTasks() }) {
@@ -242,9 +245,14 @@ fun SpaceDetailScreen(
                             when {
                                 mappings.isNotEmpty() -> {
                                     PrimaryButton(
-                                        text = if (syncStats.runningTasks > 0) "正在同步…" else "立即同步",
+                                        text = when {
+                                            // 实时显示引擎当前阶段（扫描/上传/下载/拉取云端变更）
+                                            syncing -> syncPhase ?: "正在同步…"
+                                            syncStats.runningTasks > 0 -> "正在同步…"
+                                            else -> "立即同步"
+                                        },
                                         onClick = viewModel::syncNow,
-                                        enabled = syncStats.runningTasks == 0,
+                                        enabled = !syncing && syncStats.runningTasks == 0,
                                         leadingIcon = Icons.Filled.Sync
                                     )
                                     Text(

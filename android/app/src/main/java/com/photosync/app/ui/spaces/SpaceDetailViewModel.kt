@@ -65,6 +65,13 @@ class SpaceDetailViewModel(
     private val _resolvingTaskId = MutableStateFlow<String?>(null)
     val resolvingTaskId: StateFlow<String?> = _resolvingTaskId.asStateFlow()
 
+    /** 手动同步进行中（含扫描阶段），按钮据此显示「正在同步…」并禁用，避免点击后无反馈。 */
+    private val _syncing = MutableStateFlow(false)
+    val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
+
+    /** 同步引擎当前阶段描述（扫描/上传/下载/拉取云端变更），null 表示空闲。 */
+    val syncPhase: StateFlow<String?> = syncEngine.phase
+
     /** 正在批量按云端优先处理重名失败任务。 */
     private val _resolvingAllDuplicateNames = MutableStateFlow(false)
     val resolvingAllDuplicateNames: StateFlow<Boolean> = _resolvingAllDuplicateNames.asStateFlow()
@@ -288,16 +295,22 @@ class SpaceDetailViewModel(
 
     /** 立即同步：前台时直接调用 SyncEngine（绕过 WorkManager 的调度延迟），同时排一个后台 Work 兜底。 */
     fun syncNow() {
+        if (_syncing.value) return
         viewModelScope.launch {
-            syncRepository.requeueFailed(spaceId)
-            // 前台直接执行，避免 MIUI JobScheduler 加的 TIMING_DELAY（实测可达 7 分钟以上）
-            val result = syncEngine.syncAll()
-            val msg = when (result) {
-                SyncRunResult.SUCCESS -> "同步完成"
-                SyncRunResult.RETRY -> "另外一台设备正在同步，请稍后"
-                SyncRunResult.FAILURE -> "同步失败，请查看任务详情"
+            _syncing.value = true
+            try {
+                syncRepository.requeueFailed(spaceId)
+                // 前台直接执行，避免 MIUI JobScheduler 加的 TIMING_DELAY（实测可达 7 分钟以上）
+                val result = syncEngine.syncAll()
+                val msg = when (result) {
+                    SyncRunResult.SUCCESS -> "同步完成"
+                    SyncRunResult.RETRY -> "另外一台设备正在同步，请稍后"
+                    SyncRunResult.FAILURE -> "同步失败，请查看任务详情"
+                }
+                _messages.emit(msg)
+            } finally {
+                _syncing.value = false
             }
-            _messages.emit(msg)
         }
         // 兜底：ViewModel 被销毁时 WorkManager 会接管
         scheduleSync()
@@ -305,14 +318,20 @@ class SpaceDetailViewModel(
 
     /** 刷新：仅执行队列中已存在的任务（下载/上传/变更），不扫描、不拉取新变更，与「立即同步」区分。 */
     fun runQueuedTasks() {
+        if (_syncing.value) return
         viewModelScope.launch {
-            val result = syncEngine.runQueuedTasks()
-            val msg = when (result) {
-                SyncRunResult.SUCCESS -> "队列任务已处理完成"
-                SyncRunResult.RETRY -> "暂时无法执行，请稍后重试"
-                SyncRunResult.FAILURE -> "部分任务执行失败，请查看任务详情"
+            _syncing.value = true
+            try {
+                val result = syncEngine.runQueuedTasks()
+                val msg = when (result) {
+                    SyncRunResult.SUCCESS -> "队列任务已处理完成"
+                    SyncRunResult.RETRY -> "暂时无法执行，请稍后重试"
+                    SyncRunResult.FAILURE -> "部分任务执行失败，请查看任务详情"
+                }
+                _messages.emit(msg)
+            } finally {
+                _syncing.value = false
             }
-            _messages.emit(msg)
         }
     }
 

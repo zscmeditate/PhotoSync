@@ -26,6 +26,9 @@ import com.photosync.app.data.remote.SyncLockRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
@@ -41,6 +44,14 @@ class SyncEngine(
 ) {
     private val api = repository.apiClient.api
 
+    /** 当前同步阶段描述（供 UI 按钮实时显示正在做什么），null 表示空闲。 */
+    private val _phase = MutableStateFlow<String?>(null)
+    val phase: StateFlow<String?> = _phase.asStateFlow()
+
+    private fun setPhase(text: String) {
+        _phase.value = text
+    }
+
     /**
      * 全量同步入口：各设备以文件为颗粒度并行同步。
      * 远端版本号天然保证顺序：并发上传/下载同一路径时，只有版本匹配的设备能成功；
@@ -50,15 +61,19 @@ class SyncEngine(
         // 不加全局锁，各设备以文件为颗粒度并行同步。
         // 远端文件是幂等的：不同设备不会同时上传同一路径（上传前会校验远端是否已变更），
         // 同一文件的下载/上传也不会互相覆盖——写冲突在路径冲突处理里解决。
-        var result = SyncRunResult.SUCCESS
-        for (spaceId in repository.spaceIds()) {
-            when (syncSpace(spaceId)) {
-                SyncRunResult.SUCCESS -> Unit
-                SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) result = SyncRunResult.RETRY
-                SyncRunResult.FAILURE -> result = SyncRunResult.FAILURE
+        try {
+            var result = SyncRunResult.SUCCESS
+            for (spaceId in repository.spaceIds()) {
+                when (syncSpace(spaceId)) {
+                    SyncRunResult.SUCCESS -> Unit
+                    SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) result = SyncRunResult.RETRY
+                    SyncRunResult.FAILURE -> result = SyncRunResult.FAILURE
+                }
             }
+            return result
+        } finally {
+            _phase.value = null
         }
-        return result
     }
 
     /**
@@ -68,37 +83,44 @@ class SyncEngine(
      */
     suspend fun runQueuedTasks(): SyncRunResult {
         val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
-        var result = SyncRunResult.SUCCESS
-        for (spaceId in repository.spaceIds()) {
-            repository.recoverRunning(spaceId)
-            var taskFailed = false
-            while (true) {
-                val task = repository.nextQueuedDownload(spaceId) ?: break
-                when (downloadStandaloneTask(spaceId, deviceId, task)) {
-                    SyncRunResult.SUCCESS -> Unit
-                    SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                    SyncRunResult.FAILURE -> taskFailed = true
+        try {
+            var result = SyncRunResult.SUCCESS
+            for (spaceId in repository.spaceIds()) {
+                repository.recoverRunning(spaceId)
+                var taskFailed = false
+                while (true) {
+                    val task = repository.nextQueuedDownload(spaceId) ?: break
+                    setPhase("正在下载：${task.remoteRelativePath.substringAfterLast('/')}")
+                    when (downloadStandaloneTask(spaceId, deviceId, task)) {
+                        SyncRunResult.SUCCESS -> Unit
+                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                        SyncRunResult.FAILURE -> taskFailed = true
+                    }
                 }
-            }
-            while (true) {
-                val task = repository.nextPendingUpload(spaceId) ?: break
-                when (upload(task)) {
-                    SyncRunResult.SUCCESS -> Unit
-                    SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                    SyncRunResult.FAILURE -> taskFailed = true
+                while (true) {
+                    val task = repository.nextPendingUpload(spaceId) ?: break
+                    setPhase("正在上传：${task.remoteRelativePath.substringAfterLast('/')}")
+                    when (upload(task)) {
+                        SyncRunResult.SUCCESS -> Unit
+                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                        SyncRunResult.FAILURE -> taskFailed = true
+                    }
                 }
-            }
-            while (true) {
-                val task = repository.nextPendingMutation(spaceId) ?: break
-                when (commitMutation(task)) {
-                    SyncRunResult.SUCCESS -> Unit
-                    SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                    SyncRunResult.FAILURE -> taskFailed = true
+                while (true) {
+                    val task = repository.nextPendingMutation(spaceId) ?: break
+                    setPhase("正在提交变更：${task.remoteRelativePath.substringAfterLast('/')}")
+                    when (commitMutation(task)) {
+                        SyncRunResult.SUCCESS -> Unit
+                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                        SyncRunResult.FAILURE -> taskFailed = true
+                    }
                 }
+                if (taskFailed && result == SyncRunResult.SUCCESS) result = SyncRunResult.FAILURE
             }
-            if (taskFailed && result == SyncRunResult.SUCCESS) result = SyncRunResult.FAILURE
+            return result
+        } finally {
+            _phase.value = null
         }
-        return result
     }
 
     suspend fun syncSpace(spaceId: String): SyncRunResult {
@@ -111,6 +133,7 @@ class SyncEngine(
         var planFailed = false
         var planRetry = false
         for (mapping in mappings) {
+            setPhase("正在扫描本地变更：${mapping.localPathLabel.ifBlank { "本地目录" }}")
             try {
                 val oldIndex = repository.files(mapping.id)
                 when (val scan = repository.scanMapping(mapping.id)) {
@@ -159,6 +182,7 @@ class SyncEngine(
         // 失败处理「云端优先」补建的独立下载任务没有对应远端事件，需在此主动执行。
         while (true) {
             val task = repository.nextStandaloneDownload(spaceId) ?: break
+            setPhase("正在下载：${task.remoteRelativePath.substringAfterLast('/')}")
             when (downloadStandaloneTask(spaceId, deviceId, task)) {
                 SyncRunResult.SUCCESS -> Unit
                 SyncRunResult.RETRY -> return SyncRunResult.RETRY
@@ -167,6 +191,7 @@ class SyncEngine(
         }
         while (true) {
             val task = repository.nextPendingUpload(spaceId) ?: break
+            setPhase("正在上传：${task.remoteRelativePath.substringAfterLast('/')}")
             when (upload(task)) {
                 SyncRunResult.SUCCESS -> Unit
                 SyncRunResult.RETRY -> return SyncRunResult.RETRY
@@ -175,6 +200,7 @@ class SyncEngine(
         }
         while (true) {
             val task = repository.nextPendingMutation(spaceId) ?: break
+            setPhase("正在提交变更：${task.remoteRelativePath.substringAfterLast('/')}")
             when (commitMutation(task)) {
                 SyncRunResult.SUCCESS -> Unit
                 SyncRunResult.RETRY -> return SyncRunResult.RETRY
@@ -568,6 +594,7 @@ class SyncEngine(
         mappings: List<com.photosync.app.data.local.LocalFolderMapping>
     ): SyncRunResult {
         var since = repository.cursor(spaceId, deviceId)?.lastAppliedRevision ?: "0"
+        setPhase("正在获取云端变更…")
         try {
             DecimalContract.revision(since)
             val rules = mappings.map {
@@ -642,6 +669,15 @@ class SyncEngine(
             // 阶段三：逐个处理并确认；游标随确认推进，失败时保持不动（下次重拉重试）。
             for (event in events) {
                 val revision = DecimalContract.revision(event.revision)
+                val phaseName = event.payload?.newFileName
+                    ?: event.payload?.fileName
+                    ?: event.payload?.newPath
+                    ?: event.payload?.relativePath
+                if (phaseName.isNullOrBlank()) {
+                    setPhase("正在应用云端变更…")
+                } else {
+                    setPhase("正在应用云端变更：$phaseName")
+                }
                 when (processEvent(spaceId, deviceId, rules, event)) {
                     SyncRunResult.SUCCESS -> Unit
                     SyncRunResult.RETRY -> return SyncRunResult.RETRY

@@ -230,6 +230,10 @@ interface LocalSyncTaskDao {
         """
         SELECT remoteRelativePath FROM local_sync_tasks
         WHERE spaceId = :spaceId AND state IN ('PENDING', 'RUNNING', 'RETRY', 'FAILED')
+        UNION
+        SELECT oldLocalRelativePath FROM local_sync_tasks
+        WHERE spaceId = :spaceId AND state IN ('PENDING', 'RUNNING', 'RETRY', 'FAILED')
+          AND oldLocalRelativePath IS NOT NULL
         """
     )
     suspend fun activeRemotePaths(spaceId: String): List<String>
