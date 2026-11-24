@@ -382,6 +382,17 @@ data class SyncAckResponse(
     val serverRevision: String
 )
 
+/** 账号级同步锁请求：抢锁 / 心跳 / 释放共用。 */
+@Serializable
+data class SyncLockRequest(val deviceId: String)
+
+@Serializable
+data class SyncLockResponse(
+    val acquired: Boolean,
+    val holderDeviceId: String? = null,
+    val expiresAt: Long? = null
+)
+
 @Serializable
 data class SpaceSyncStatusResponse(
     val spaceId: String,
@@ -389,6 +400,15 @@ data class SpaceSyncStatusResponse(
     val lastAppliedRevision: String,
     val pendingEvents: Int,
     val activeFileCount: Int
+)
+
+/** 空间云端存储统计：活动文件与回收站的数量/总大小（字节数为十进制字符串）。 */
+@Serializable
+data class SpaceStorageStatsResponse(
+    val activeFileCount: Int,
+    val activeSize: String,
+    val trashCount: Int,
+    val trashSize: String
 )
 
 @Serializable

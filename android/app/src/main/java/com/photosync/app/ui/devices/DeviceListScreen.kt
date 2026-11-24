@@ -252,7 +252,7 @@ private fun PrimaryDeviceCard(
             Text(
                 text = when {
                     primaryDevice == null -> "当前没有主设备，任意设备都可以抢占主设备身份。"
-                    primaryDevice.isThisDevice -> "当前主设备：本机。可在从设备菜单中移除该设备。"
+                    primaryDevice.isThisDevice -> "当前主设备：本机。可在其它从设备的菜单中移除它们。"
                     else -> "当前主设备：${primaryDevice.deviceName}。只有主设备可以移除从设备。"
                 },
                 style = MaterialTheme.typography.bodySmall,

@@ -41,7 +41,8 @@ export interface SpaceDto {
   name: string;
   description: string | null;
   revision: string;
-  role: MemberRoleValue;
+  /** none 表示该设备尚未加入该空间（与 spaceDtoSchema 的枚举一致） */
+  role: MemberRoleValue | 'none';
   memberCount: number;
   mappingCount: number;
   createdAt: string;
@@ -67,6 +68,14 @@ export interface JoinRequestDto {
   status: JoinRequestStatusValue;
   requestedAt: string;
   resolvedAt: string | null;
+}
+
+/** 空间云端存储统计：活动文件与回收站的数量/总大小（字节数以十进制字符串表示）。 */
+export interface SpaceStorageStatsDto {
+  activeFileCount: number;
+  activeSize: string;
+  trashCount: number;
+  trashSize: string;
 }
 
 export interface MappingDto {
@@ -443,6 +452,18 @@ export class SpaceService {
     await this.requireAccess(userId, spaceId);
     const mappings = await this.deps.spaces.listMappings(spaceId, deviceId);
     return mappings.map(toMappingDto);
+  }
+
+  /** 空间云端存储统计：活动文件与回收站的数量/总大小。 */
+  async getStorageStats(userId: string, spaceId: string): Promise<SpaceStorageStatsDto> {
+    await this.requireAccess(userId, spaceId);
+    const stats = await this.deps.spaces.storageStats(spaceId);
+    return {
+      activeFileCount: stats.activeFileCount,
+      activeSize: String(stats.activeSize),
+      trashCount: stats.trashCount,
+      trashSize: String(stats.trashSize),
+    };
   }
 
   async updateMapping(

@@ -73,17 +73,20 @@ data class LocalSyncCursor(
 data class SyncTaskStats(
     val pendingUploads: Int = 0,
     val pendingDownloads: Int = 0,
+    val pendingMutations: Int = 0,
     val failedTasks: Int = 0,
     val runningTasks: Int = 0
 )
 
 @Dao
 interface LocalSyncTaskDao {
+    /** 任务统计：待处理仅统计从未执行的任务（等待执行/等待重试），进行中与失败单独计数。 */
     @Query(
         """
         SELECT
-            COALESCE(SUM(CASE WHEN type = 'UPLOAD' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingUploads,
-            COALESCE(SUM(CASE WHEN type = 'DOWNLOAD' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDownloads,
+            COALESCE(SUM(CASE WHEN type = 'UPLOAD' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingUploads,
+            COALESCE(SUM(CASE WHEN type = 'DOWNLOAD' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDownloads,
+            COALESCE(SUM(CASE WHEN type IN ('DELETE', 'RENAME') AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingMutations,
             COALESCE(SUM(CASE WHEN state = 'FAILED' THEN 1 ELSE 0 END), 0) AS failedTasks,
             COALESCE(SUM(CASE WHEN state = 'RUNNING' THEN 1 ELSE 0 END), 0) AS runningTasks
         FROM local_sync_tasks WHERE spaceId = :spaceId
@@ -91,11 +94,11 @@ interface LocalSyncTaskDao {
     )
     fun observeStats(spaceId: String): Flow<SyncTaskStats>
 
-    /** 任务中心：进行中、等待与失败任务，运行中的排在最前。 */
+    /** 空间详情：该空间的进行中、待处理与失败任务，按空间隔离。 */
     @Query(
         """
         SELECT * FROM local_sync_tasks
-        WHERE state IN ('PENDING', 'RUNNING', 'RETRY', 'FAILED')
+        WHERE spaceId = :spaceId AND state IN ('PENDING', 'RUNNING', 'RETRY', 'FAILED')
         ORDER BY
             CASE state
                 WHEN 'RUNNING' THEN 0
@@ -106,7 +109,7 @@ interface LocalSyncTaskDao {
             updatedAt DESC
         """
     )
-    fun observeActive(): Flow<List<LocalSyncTask>>
+    fun observeActiveBySpace(spaceId: String): Flow<List<LocalSyncTask>>
 
     /** 活动记录：包含已完成任务在内的最近任务时间线。 */
     @Query("SELECT * FROM local_sync_tasks ORDER BY updatedAt DESC LIMIT :limit")
@@ -201,6 +204,15 @@ interface LocalSyncTaskDao {
         updatedAt: Long
     )
 
+    /** 下载进度：仅更新已传输字节数（下载无分片概念）。 */
+    @Query(
+        """
+        UPDATE local_sync_tasks SET bytesTransferred = :bytesTransferred, updatedAt = :updatedAt
+        WHERE id = :taskId
+        """
+    )
+    suspend fun updateDownloadProgress(taskId: String, bytesTransferred: Long, updatedAt: Long)
+
     /** 任务中心重试：失败/等待中的任务回到待执行队列。 */
     @Query(
         """
@@ -216,6 +228,16 @@ interface LocalSyncTaskDao {
 
     @Query("DELETE FROM local_sync_tasks WHERE mappingId = :mappingId")
     suspend fun deleteByMapping(mappingId: String)
+
+    /** 本地文件已从扫描中消失且无远端关联（如被识别为系统回收站）时，撤销其未执行的上传任务。 */
+    @Query(
+        """
+        DELETE FROM local_sync_tasks
+        WHERE spaceId = :spaceId AND mappingId = :mappingId AND type = 'UPLOAD'
+          AND localRelativePath = :localRelativePath AND state IN ('PENDING', 'RETRY', 'FAILED')
+        """
+    )
+    suspend fun deleteUploadTasksForLocalPath(spaceId: String, mappingId: String, localRelativePath: String)
 
     @Query("DELETE FROM local_sync_tasks WHERE spaceId = :spaceId")
     suspend fun deleteBySpace(spaceId: String)

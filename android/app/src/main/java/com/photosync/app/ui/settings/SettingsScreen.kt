@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -59,11 +58,10 @@ import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 import kotlinx.coroutines.launch
 
-/** 设置页：账号/服务器、同步调度、任务与诊断入口。 */
+/** 设置页：账号/服务器、同步调度与诊断入口。 */
 @Composable
 fun SettingsScreen(
     onLoggedOut: () -> Unit,
-    onOpenTaskCenter: () -> Unit,
     onOpenActivity: () -> Unit
 ) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
@@ -222,13 +220,6 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    ClickableSettingRow(
-                        icon = Icons.Filled.TaskAlt,
-                        label = "任务中心",
-                        value = "查看进行中与失败任务，支持重试",
-                        onClick = onOpenTaskCenter
-                    )
-                    Spacer(Modifier.height(12.dp))
                     ClickableSettingRow(
                         icon = Icons.Filled.History,
                         label = "活动记录",

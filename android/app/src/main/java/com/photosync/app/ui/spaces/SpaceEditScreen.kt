@@ -91,17 +91,19 @@ fun SpaceEditScreen(
                     colors = appTextFieldColors(),
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(Modifier.height(16.dp))
-                OutlinedTextField(
-                    value = state.deviceId.ifEmpty { "未注册" },
-                    onValueChange = {},
-                    label = { Text("初始设备 ID（默认本机）") },
-                    enabled = false,
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                if (spaceId == null) {
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = state.deviceId.ifEmpty { "未注册" },
+                        onValueChange = {},
+                        label = { Text("初始设备 ID（默认本机）") },
+                        enabled = false,
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = appTextFieldColors(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 Spacer(Modifier.height(16.dp))
                 state.error?.let {
                     ErrorBanner(message = it)

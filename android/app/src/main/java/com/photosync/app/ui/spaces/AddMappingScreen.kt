@@ -1,6 +1,7 @@
 package com.photosync.app.ui.spaces
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -196,7 +197,7 @@ private fun MappingForm(
             Column(modifier = Modifier.padding(14.dp)) {
                 Text(state.localPathLabel, fontWeight = FontWeight.SemiBold)
                 Text(
-                    text = state.treeUri,
+                    text = displayLocalPath(state.treeUri),
                     style = MaterialTheme.typography.bodySmall,
                     color = OnSurfaceMuted,
                     maxLines = 2,
@@ -323,5 +324,26 @@ private fun PreviewCountRow(label: String, count: Int, icon: ImageVector, color:
             Text(label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             Text("$count 项", style = MaterialTheme.typography.titleLarge, color = color, fontWeight = FontWeight.Bold)
         }
+    }
+}
+
+/** 把 SAF 的 tree URI 转成可读路径展示，中文与空格保持原样（仅用于显示，不改动存储）。 */
+private fun displayLocalPath(treeUri: String): String {
+    val documentId = runCatching { Uri.parse(treeUri).lastPathSegment }.getOrNull()
+        ?.takeIf { it.isNotBlank() }
+        ?: return treeUri
+    if (documentId.startsWith("raw:")) return documentId.removePrefix("raw:")
+    if (!documentId.contains(':')) return documentId
+    val volume = documentId.substringBefore(':')
+    val relative = documentId.substringAfter(':')
+    val volumeLabel = when {
+        volume.equals("primary", ignoreCase = true) -> "内部存储"
+        Regex("^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$").matches(volume) -> "存储卡（$volume）"
+        else -> null
+    }
+    return when {
+        volumeLabel == null -> relative.ifEmpty { documentId }
+        relative.isEmpty() -> volumeLabel
+        else -> "$volumeLabel/$relative"
     }
 }

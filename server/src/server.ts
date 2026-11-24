@@ -16,6 +16,18 @@ async function main(): Promise<void> {
   const objectStore = new S3ObjectStore(config);
   await objectStore.ensureBucket();
 
+  const sync = new PrismaSyncRepository(prisma);
+  // 启动维护：清理历史上误上传的系统回收站文件（.trashed-* / .Trash）。
+  // 与正常删除一致地软删除并广播 file_deleted 事件，各设备下次拉取时移除本地副本。
+  try {
+    const cleaned = await sync.removeLegacySystemTrashFiles();
+    if (cleaned.removed > 0) {
+      console.log(`[maintenance] cleaned ${cleaned.removed} legacy system-trash file(s)`);
+    }
+  } catch (err) {
+    console.error('[maintenance] system-trash cleanup failed:', err);
+  }
+
   const app = await buildApp({
     config,
     users: new PrismaUserRepository(prisma),
@@ -23,7 +35,7 @@ async function main(): Promise<void> {
     refreshTokens: new PrismaRefreshTokenRepository(prisma),
     spaces: new PrismaSpaceRepository(prisma),
     transfers: new PrismaTransferRepository(prisma),
-    sync: new PrismaSyncRepository(prisma),
+    sync,
     objectStore,
     logger: true,
   });

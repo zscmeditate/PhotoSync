@@ -24,6 +24,8 @@ const configSchema = z.object({
     .default(true),
   /** 固定分片大小，默认 8 MiB；路由同时以此限制原始请求体 */
   UPLOAD_PART_SIZE: z.coerce.number().int().positive().max(64 * 1024 * 1024).default(8 * 1024 * 1024),
+  /** 账号级同步锁 TTL（毫秒）：持锁设备需每 25s 心跳续期，超时视为失联自动放行 */
+  SYNC_LOCK_TTL_MS: z.coerce.number().int().positive().default(90_000),
 });
 
 export type Config = z.infer<typeof configSchema>;

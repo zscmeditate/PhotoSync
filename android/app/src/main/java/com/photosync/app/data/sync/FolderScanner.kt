@@ -59,9 +59,13 @@ class FolderScanner(private val context: Context) {
                 val name = document.name
                     ?: throw FolderScanException("目录中存在无法识别名称的项目")
                 if (MediaFileFilter.isTemporarySyncFile(name)) continue
+                // 系统回收站条目（系统已删除的文件）不参与同步。
+                if (MediaFileFilter.isSystemTrashed(name)) continue
                 if (document.isDirectory) {
                     // 本地恢复区是应用内部目录，不能被当成同步内容上传。
                     if (name == LOCAL_TRASH_DIR_NAME) continue
+                    // 系统回收站目录（.Trash / .trash）整目录跳过。
+                    if (MediaFileFilter.isSystemTrashDir(name)) continue
                     val path = if (parentPath.isEmpty()) name else "$parentPath/$name"
                     visit(document, path)
                     continue

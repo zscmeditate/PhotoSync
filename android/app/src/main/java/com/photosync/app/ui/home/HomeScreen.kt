@@ -1,5 +1,6 @@
 package com.photosync.app.ui.home
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.SyncProblem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -64,6 +66,7 @@ import androidx.navigation.NavHostController
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.MappingStatus
 import com.photosync.app.data.local.SyncTaskType
+import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.IconBadge
 import com.photosync.app.ui.components.SectionHeader
@@ -100,6 +103,13 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val spaceViewModel: SpaceListViewModel = viewModel {
         SpaceListViewModel(app.container.spaceRepository, app.container.deviceRepository)
+    }
+
+    // 首页是导航根页面，返回手势不再直接退出应用，改为弹出二次确认。
+    var exitConfirm by rememberSaveable { mutableStateOf(false) }
+    val activityContext = LocalContext.current
+    BackHandler {
+        exitConfirm = true
     }
 
     Scaffold(
@@ -177,11 +187,22 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                 HomeTab.DEVICES -> DeviceListScreen()
                 HomeTab.SETTINGS -> SettingsScreen(
                     onLoggedOut = onLoggedOut,
-                    onOpenTaskCenter = { navController.navigate(Screen.TaskCenter.route) },
                     onOpenActivity = { navController.navigate(Screen.ActivityLog.route) }
                 )
             }
         }
+    }
+
+    if (exitConfirm) {
+        ConfirmBottomSheet(
+            title = "退出 PhotoSync",
+            message = "确定要退出应用吗？退出后后台同步仍会按计划运行。",
+            confirmText = "退出应用",
+            onConfirm = {
+                (activityContext as? androidx.activity.ComponentActivity)?.finishAffinity()
+            },
+            onDismiss = { exitConfirm = false }
+        )
     }
 }
 
@@ -200,6 +221,7 @@ private fun HomeOverviewTab(
     val abnormalSpaceIds = mappings.filter {
         it.status == MappingStatus.ERROR || it.status == MappingStatus.ACCESS_REVOKED
     }.map { it.spaceId }.toSet()
+    val hasAbnormalMapping = abnormalSpaceIds.isNotEmpty()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -243,15 +265,27 @@ private fun HomeOverviewTab(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
-                imageVector = Icons.Filled.CheckCircle,
+                imageVector = if (hasAbnormalMapping) Icons.Filled.SyncProblem else Icons.Filled.CheckCircle,
                 contentDescription = null,
-                tint = SuccessGreen,
+                tint = when {
+                    spaces.isEmpty() -> OnSurfaceMuted
+                    hasAbnormalMapping -> WarningOrange
+                    else -> SuccessGreen
+                },
                 modifier = Modifier.size(36.dp)
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = if (spaces.isEmpty()) "暂无同步空间" else "同步正常",
-                color = if (spaces.isEmpty()) OnSurfaceMuted else SuccessGreen,
+                text = when {
+                    spaces.isEmpty() -> "暂无同步空间"
+                    hasAbnormalMapping -> "部分目录需要处理"
+                    else -> "同步正常"
+                },
+                color = when {
+                    spaces.isEmpty() -> OnSurfaceMuted
+                    hasAbnormalMapping -> WarningOrange
+                    else -> SuccessGreen
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -259,6 +293,7 @@ private fun HomeOverviewTab(
             val summaryHint = when {
                 spaces.isEmpty() -> "创建空间并添加本地目录后，这里会显示空间与映射摘要。"
                 mappings.isEmpty() -> "本机尚未绑定本地目录"
+                hasAbnormalMapping -> "有目录授权失效或扫描异常，请进入空间详情处理"
                 else -> null
             }
             if (summaryHint != null) {
@@ -270,7 +305,7 @@ private fun HomeOverviewTab(
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "上传 / 下载任务可在「设置 → 任务中心」查看",
+                text = "待同步任务可在各空间详情页查看",
                 color = OnSurfaceMuted,
                 style = MaterialTheme.typography.bodySmall
             )
@@ -347,7 +382,7 @@ private fun HomeOverviewTab(
                 EmptyStateView(
                     icon = Icons.Filled.History,
                     title = "同步活动",
-                    subtitle = "查看本机最近的上传、下载、删除与冲突处理记录"
+                    subtitle = "查看本机最近的上传、下载、删除与重命名记录"
                 )
             }
         } else {

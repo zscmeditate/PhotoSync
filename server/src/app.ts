@@ -23,6 +23,7 @@ import healthRoutes from './routes/health.routes';
 import mappingsRoutes from './routes/mappings.routes';
 import spacesRoutes from './routes/spaces.routes';
 import syncRoutes from './routes/sync.routes';
+import syncLockRoutes from './routes/sync-lock.routes';
 import trashRoutes from './routes/trash.routes';
 import uploadsRoutes from './routes/uploads.routes';
 import wsRoutes from './routes/ws.routes';
@@ -30,6 +31,7 @@ import { AuthService } from './services/auth.service';
 import { DeviceService } from './services/device.service';
 import { SpaceService } from './services/space.service';
 import { SyncService } from './services/sync.service';
+import { SyncLockService } from './services/sync-lock.service';
 import { TransferService } from './services/transfer.service';
 
 export interface AppDependencies {
@@ -83,6 +85,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   });
   // 实时提示：commit 成功后向订阅该空间的连接推送 revision 提示。
   const hub = new RealtimeHub();
+  // 账号级同步锁：同一账号同一时刻仅一台设备执行上传/下载，其他设备等待。
+  const syncLockService = new SyncLockService(deps.config.SYNC_LOCK_TTL_MS);
 
   await app.register(fastifyWebsocket);
 
@@ -209,6 +213,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     syncService,
     jwt,
     hub,
+  });
+  await app.register(syncLockRoutes, {
+    prefix: '/api/v1',
+    syncLockService,
+    jwt,
   });
   await app.register(conflictsRoutes, {
     prefix: '/api/v1',

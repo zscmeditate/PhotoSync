@@ -35,6 +35,20 @@ object MediaFileFilter {
 
     fun isTemporarySyncFile(name: String): Boolean =
         name.startsWith(".photosync-") && name.endsWith(".tmp")
+
+    /**
+     * Android 系统回收站条目：MediaStore 删除会把文件改名成 .trashed-<随机>-<时间戳>…，
+     * 属于"系统已删除"的文件，不参与同步。
+     */
+    fun isSystemTrashed(name: String): Boolean = name.startsWith(".trashed-")
+
+    /** 系统回收站目录（不同 ROM 大小写不一），整个目录跳过。 */
+    fun isSystemTrashDir(name: String): Boolean =
+        name.equals(".Trash", ignoreCase = true) || name.equals(".trash", ignoreCase = true)
+
+    /** 路径任一段是系统回收站条目或目录时为 true。 */
+    fun isSystemTrashPath(path: String): Boolean =
+        path.split('/').any { isSystemTrashed(it) || isSystemTrashDir(it) }
 }
 
 object RemoteDownloadPlanner {
@@ -47,6 +61,10 @@ object RemoteDownloadPlanner {
         val normalized = validation.normalized
         // 兼容历史版本误上传的本地恢复区内容：这类路径不参与同步。
         if (normalized == LOCAL_TRASH_DIR_NAME || normalized.startsWith("$LOCAL_TRASH_DIR_NAME/")) {
+            return null
+        }
+        // 系统回收站内容（历史误上传等）不再下载同步。
+        if (normalized.split('/').any { MediaFileFilter.isSystemTrashed(it) || MediaFileFilter.isSystemTrashDir(it) }) {
             return null
         }
         return mappings.firstOrNull { mapping ->

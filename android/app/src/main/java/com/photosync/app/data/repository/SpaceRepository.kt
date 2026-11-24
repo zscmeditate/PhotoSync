@@ -217,7 +217,22 @@ class SpaceRepository(
                 apiClient.api.removeSpaceMember(spaceId, deviceId, operatorDeviceId)
             }
         ) {
-            is ApiResult.Success -> ApiResult.Success(Unit)
+            is ApiResult.Success -> {
+                // 本机退出空间：与服务端保持一致，整体清除本地映射、索引、任务与游标。
+                // 否则重新加入时会带着旧游标，远端已有文件将永远无法补下载。
+                if (deviceId == operatorDeviceId) {
+                    database.withTransaction {
+                        mappingDao.getBySpaceAndDevice(spaceId, deviceId).forEach { mapping ->
+                            fileDao.clearByMapping(mapping.id)
+                            mappingDao.deleteById(mapping.id)
+                        }
+                        syncTaskDao.deleteBySpace(spaceId)
+                        syncCursorDao.deleteBySpace(spaceId)
+                    }
+                    pendingBindingStore.clear(spaceId)
+                }
+                ApiResult.Success(Unit)
+            }
             is ApiResult.Failure -> result
         }
     }

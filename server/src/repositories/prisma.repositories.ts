@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   Prisma,
   type CredentialStatus,
@@ -28,6 +29,7 @@ import type {
   SpaceMemberRecord,
   SpaceMemberWithDeviceRecord,
   SpaceRepository,
+  SpaceStorageStatsRecord,
   SpaceUpdateData,
   SpaceWithCountsRecord,
   SyncFileRecord,
@@ -483,6 +485,31 @@ export class PrismaSpaceRepository implements SpaceRepository {
       select: { id: true, relativePath: true, size: true, sha256: true, version: true },
       orderBy: { relativePath: 'asc' },
     });
+  }
+
+  async storageStats(spaceId: string): Promise<SpaceStorageStatsRecord> {
+    // 回收站表本身不存大小，需要通过关联文件聚合
+    const [active, trashItems] = await Promise.all([
+      this.prisma.syncFile.aggregate({
+        where: { spaceId, isDeleted: false },
+        _count: { _all: true },
+        _sum: { size: true },
+      }),
+      this.prisma.trashItem.findMany({
+        where: { spaceId },
+        select: { file: { select: { size: true } } },
+      }),
+    ]);
+    let trashSize = 0n;
+    for (const item of trashItems) {
+      trashSize += item.file.size;
+    }
+    return {
+      activeFileCount: active._count._all,
+      activeSize: active._sum.size ?? 0n,
+      trashCount: trashItems.length,
+      trashSize,
+    };
   }
 }
 
@@ -1013,6 +1040,95 @@ export class PrismaSyncRepository implements SyncRepository {
       }
       throw error;
     }
+  }
+
+  /**
+   * 启动维护：清理历史上误上传的系统回收站文件。
+   * Android 端已把 `.trashed-*`（MediaStore 删除改名的文件）与 `.Trash` 目录排除出同步，
+   * 这里对库中已存在的这类文件补一次与正常删除一致的软删除：
+   * 写回收站条目（30 天保留）并广播 file_deleted 事件，各设备下次拉取时移除本地副本。
+   * 仅处理未删除文件，因此重复执行幂等。
+   */
+  async removeLegacySystemTrashFiles(): Promise<{ removed: number }> {
+    const candidates = await this.prisma.syncFile.findMany({
+      where: {
+        isDeleted: false,
+        OR: [
+          { relativePath: { startsWith: '.trashed-' } },
+          { relativePath: { contains: '/.trashed-' } },
+          { relativePath: { startsWith: '.Trash/' } },
+          { relativePath: { contains: '/.Trash/' } },
+          { relativePath: { startsWith: '.trash/' } },
+          { relativePath: { contains: '/.trash/' } },
+        ],
+      },
+      select: {
+        id: true,
+        spaceId: true,
+        relativePath: true,
+        fileName: true,
+        version: true,
+        objectId: true,
+        lastModifiedByDeviceId: true,
+      },
+    });
+    let removed = 0;
+    for (const candidate of candidates) {
+      // 精确按路径段判断，避免误伤恰好包含这些子串的正常文件
+      const isTrashEntry = candidate.relativePath.split('/').some((segment) => {
+        return segment.startsWith('.trashed-') || segment.toLowerCase() === '.trash';
+      });
+      if (!isTrashEntry) continue;
+      try {
+        await this.prisma.$transaction(async (transaction) => {
+          const tx = transaction as unknown as PrismaClient;
+          const file = await tx.syncFile.findUnique({ where: { id: candidate.id } });
+          if (!file || file.isDeleted) return;
+          const space = await tx.syncSpace.update({
+            where: { id: file.spaceId },
+            data: { revision: { increment: 1 } },
+            select: { revision: true },
+          });
+          await tx.syncFile.update({
+            where: { id: file.id },
+            data: { isDeleted: true },
+          });
+          await tx.trashItem.create({
+            data: {
+              spaceId: file.spaceId,
+              fileId: file.id,
+              relativePath: file.relativePath,
+              deletedByDeviceId: file.lastModifiedByDeviceId,
+              purgeAfter: new Date(Date.now() + TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000),
+              objectId: file.objectId,
+            },
+          });
+          const payload: FileDeletedPayload = {
+            fileId: file.id,
+            relativePath: file.relativePath,
+            fileName: file.fileName,
+            version: file.version,
+            baseVersion: file.version,
+            lastModifiedByDeviceId: file.lastModifiedByDeviceId,
+          };
+          await tx.syncEvent.create({
+            data: {
+              spaceId: file.spaceId,
+              revision: space.revision,
+              type: 'file_deleted',
+              payload: asEventPayload(payload),
+              deviceId: file.lastModifiedByDeviceId,
+              operationId: randomUUID(),
+            },
+          });
+          removed += 1;
+        });
+      } catch (error) {
+        // 单个文件清理失败不应阻断启动，记录后继续
+        console.error(`[maintenance] failed to clean system-trash file ${candidate.relativePath}:`, error);
+      }
+    }
+    return { removed };
   }
 
   async commitFileRenamed(data: CommitFileRenamedData): Promise<CommitMutationResult> {

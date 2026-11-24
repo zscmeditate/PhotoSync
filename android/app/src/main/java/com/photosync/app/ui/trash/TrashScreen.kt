@@ -106,7 +106,7 @@ fun TrashScreen(spaceId: String, onBack: () -> Unit) {
                         EmptyStateView(
                             icon = Icons.Filled.DeleteSweep,
                             title = "回收站为空",
-                            subtitle = "其他设备删除的文件会出现在这里"
+                            subtitle = "各设备删除的文件会出现在这里，可在保留期内恢复"
                         )
                     }
                 } else {

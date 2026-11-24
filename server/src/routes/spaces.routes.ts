@@ -147,6 +147,26 @@ const joinRequestListSchema = {
   properties: { requests: { type: 'array', items: joinRequestSchema } },
 } as const;
 
+const storageStatsSchema = {
+  type: 'object',
+  required: ['activeFileCount', 'activeSize', 'trashCount', 'trashSize'],
+  additionalProperties: false,
+  properties: {
+    activeFileCount: { type: 'integer', description: '云端活动文件数' },
+    activeSize: {
+      type: 'string',
+      pattern: '^[0-9]+$',
+      description: '云端活动文件总字节数（十进制字符串）',
+    },
+    trashCount: { type: 'integer', description: '回收站文件数' },
+    trashSize: {
+      type: 'string',
+      pattern: '^[0-9]+$',
+      description: '回收站占用字节数（十进制字符串）',
+    },
+  },
+} as const;
+
 function parseJoinRequestId(params: unknown): string {
   const result = joinRequestParamsSchema.safeParse(params);
   if (!result.success) {
@@ -698,6 +718,30 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
         query.deviceId,
       );
       return { mappings };
+    },
+  );
+
+  app.get(
+    '/spaces/:spaceId/storage',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['spaces'],
+        summary: '空间云端存储统计（活动文件 + 回收站占用）',
+        security: bearerSecurity,
+        params: spaceParams,
+        response: {
+          200: storageStatsSchema,
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const spaceId = parseSpaceId(request.params);
+      return spaceService.getStorageStats(authUserId(request), spaceId);
     },
   );
 

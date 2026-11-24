@@ -219,6 +219,16 @@ export interface SpaceRepository {
   deleteMapping(mappingId: string): Promise<void>;
 
   listActiveFiles(spaceId: string): Promise<SyncFileRecord[]>;
+
+  /** 空间云端存储统计：活动文件与回收站的数量/总大小。 */
+  storageStats(spaceId: string): Promise<SpaceStorageStatsRecord>;
+}
+
+export interface SpaceStorageStatsRecord {
+  activeFileCount: number;
+  activeSize: bigint;
+  trashCount: number;
+  trashSize: bigint;
 }
 
 export type UploadSessionStatusValue = 'pending' | 'uploading' | 'completed' | 'aborted';
@@ -533,6 +543,12 @@ export interface SyncRepository {
   commitFileUpdated(data: CommitFileUpdatedData): Promise<CommitMutationResult>;
   commitFileDeleted(data: CommitFileDeletedData): Promise<CommitMutationResult>;
   commitFileRenamed(data: CommitFileRenamedData): Promise<CommitMutationResult>;
+  /**
+   * 启动维护：清理历史上误入库的系统回收站文件（.trashed-* / .Trash）。
+   * 与正常删除一致：软删除 + 回收站条目 + 广播 file_deleted 事件，
+   * 各设备下次拉取时移除本地副本。仅处理未删除文件，重复执行幂等。
+   */
+  removeLegacySystemTrashFiles(): Promise<{ removed: number }>;
   getSpaceRevision(spaceId: string): Promise<bigint | null>;
   listEvents(
     spaceId: string,

@@ -10,7 +10,6 @@ import androidx.navigation.navArgument
 import com.photosync.app.ui.activity.ActivityScreen
 import com.photosync.app.ui.auth.LoginScreen
 import com.photosync.app.ui.auth.RegisterScreen
-import com.photosync.app.ui.conflicts.ConflictsScreen
 import com.photosync.app.ui.home.HomeScreen
 import com.photosync.app.ui.onboarding.OnboardingScreen
 import com.photosync.app.ui.serverconfig.ServerConfigScreen
@@ -20,7 +19,6 @@ import com.photosync.app.ui.spaces.MappingFilesScreen
 import com.photosync.app.ui.spaces.SpaceDetailScreen
 import com.photosync.app.ui.spaces.SpaceEditScreen
 import com.photosync.app.ui.splash.SplashScreen
-import com.photosync.app.ui.tasks.TaskCenterScreen
 import com.photosync.app.ui.trash.TrashScreen
 import com.photosync.app.ui.versions.FileVersionsScreen
 
@@ -125,8 +123,7 @@ fun AppRoot(navController: NavHostController = rememberNavController()) {
                 onEditSpace = { navController.navigate(Screen.SpaceEdit(it).route) },
                 onAddMapping = { navController.navigate(Screen.AddMapping(it).route) },
                 onOpenMapping = { navController.navigate(Screen.MappingFiles(it).route) },
-                onOpenTrash = { navController.navigate(Screen.SpaceTrash(it).route) },
-                onOpenConflicts = { navController.navigate(Screen.SpaceConflicts(it).route) }
+                onOpenTrash = { navController.navigate(Screen.SpaceTrash(it).route) }
             )
         }
 
@@ -163,23 +160,12 @@ fun AppRoot(navController: NavHostController = rememberNavController()) {
             )
         }
 
-        composable(Screen.TaskCenter.route) {
-            TaskCenterScreen(onBack = { navController.popBackStack() })
-        }
-
         composable(Screen.ActivityLog.route) {
             ActivityScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Screen.SpaceTrash.ROUTE) { entry ->
             TrashScreen(
-                spaceId = requireNotNull(entry.arguments?.getString("spaceId")),
-                onBack = { navController.popBackStack() }
-            )
-        }
-
-        composable(Screen.SpaceConflicts.ROUTE) { entry ->
-            ConflictsScreen(
                 spaceId = requireNotNull(entry.arguments?.getString("spaceId")),
                 onBack = { navController.popBackStack() }
             )

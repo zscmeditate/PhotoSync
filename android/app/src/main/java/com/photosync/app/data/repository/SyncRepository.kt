@@ -19,6 +19,7 @@ import com.photosync.app.data.remote.RemoteFileDto
 import com.photosync.app.data.sync.FolderScanProgress
 import com.photosync.app.data.sync.LocalChange
 import com.photosync.app.data.sync.LocalChangeDetector
+import com.photosync.app.data.sync.MediaFileFilter
 import com.photosync.app.data.sync.RemoteDownloadPlanner
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
@@ -38,7 +39,9 @@ class SyncRepository(
 
     fun observeStats(spaceId: String): Flow<SyncTaskStats> = taskDao.observeStats(spaceId)
 
-    fun observeActiveTasks(): Flow<List<LocalSyncTask>> = taskDao.observeActive()
+    /** 空间详情的任务列表：该空间的进行中、待处理与失败任务，按空间隔离。 */
+    fun observeActiveTasks(spaceId: String): Flow<List<LocalSyncTask>> =
+        taskDao.observeActiveBySpace(spaceId)
 
     fun observeRecentTasks(limit: Int = 200): Flow<List<LocalSyncTask>> = taskDao.observeRecent(limit)
 
@@ -125,6 +128,14 @@ class SyncRepository(
         updatedAt = System.currentTimeMillis()
     )
 
+    /** 下载进度：写入任务已传输字节数，任务列表据此显示实时进度条。 */
+    suspend fun updateDownloadProgress(taskId: String, bytesTransferred: Long) =
+        taskDao.updateDownloadProgress(
+            taskId = taskId,
+            bytesTransferred = bytesTransferred,
+            updatedAt = System.currentTimeMillis()
+        )
+
     suspend fun deleteIndex(mappingId: String, relativePath: String) {
         fileDao.deleteByPath(mappingId, relativePath)
     }
@@ -178,7 +189,12 @@ class SyncRepository(
         newIndex: List<LocalFileIndex>
     ) {
         database.withTransaction {
+            // 系统回收站条目（.trashed-* / .Trash）不再传播删除：
+            // 服务端启动维护会统一软删除并广播 file_deleted 事件，这里跳过以免重复删除。
             val changes = LocalChangeDetector.detect(oldIndex, newIndex)
+                .filterNot { change ->
+                    change is LocalChange.Delete && MediaFileFilter.isSystemTrashPath(change.relativePath)
+                }
             val now = System.currentTimeMillis()
             val coveredPaths = mutableSetOf<String>()
             for (change in changes) {
@@ -230,8 +246,93 @@ class SyncRepository(
                     baseVersion = null, fileId = file.remoteFileId, now
                 )
             }
+            cancelTasksForVanishedFiles(spaceId, mapping, oldIndex, newIndex, changes, coveredPaths)
         }
     }
+
+    /**
+     * 扫描后消失、且没有产生任何同步变更的本地文件（典型：被系统识别为回收站条目
+     * 而过滤出扫描），撤销其未执行的上传任务，使其彻底不参与同步。
+     */
+    private suspend fun cancelTasksForVanishedFiles(
+        spaceId: String,
+        mapping: LocalFolderMapping,
+        oldIndex: List<LocalFileIndex>,
+        newIndex: List<LocalFileIndex>,
+        changes: List<LocalChange>,
+        coveredPaths: Set<String>
+    ) {
+        val newPathSet = newIndex.mapTo(mutableSetOf()) { it.relativePath }
+        for (old in oldIndex) {
+            if (old.relativePath in newPathSet) continue
+            // 已同步文件消失由 Delete 变更传播删除，不在此撤销
+            if (old.status == FileSyncStatus.SYNCED && old.remoteFileId != null) continue
+            if (old.relativePath in coveredPaths) continue
+            taskDao.deleteUploadTasksForLocalPath(spaceId, mapping.id, old.relativePath)
+        }
+    }
+
+    /** 冲突解决「保留本地」：以指定 baseVersion/fileId 提交 file_updated，覆盖云端内容。 */
+    suspend fun enqueueOverwriteUpload(
+        spaceId: String,
+        mapping: LocalFolderMapping,
+        localPath: String,
+        size: Long,
+        sha256: String?,
+        baseVersion: Int,
+        fileId: String,
+        now: Long
+    ) = enqueueUploadTask(spaceId, mapping, localPath, size, sha256, baseVersion, fileId, now)
+
+    /**
+     * 文件列表失败处理「保留云端」：按云端对象直接补建下载任务（无事件游标约束）。
+     */
+    suspend fun enqueueFileDownloadTask(
+        spaceId: String,
+        mappingId: String,
+        localPath: String,
+        fileId: String,
+        objectId: String,
+        size: Long,
+        sha256: String
+    ) {
+        val remotePath = RemoteDownloadPlanner.remotePath(localPath)
+        if (taskDao.countActiveTasks(spaceId, mappingId, remotePath) > 0) return
+        val now = System.currentTimeMillis()
+        val task = LocalSyncTask(
+            id = UUID.randomUUID().toString(),
+            spaceId = spaceId,
+            mappingId = mappingId,
+            type = SyncTaskType.DOWNLOAD,
+            state = SyncTaskState.PENDING,
+            localRelativePath = localPath,
+            remoteRelativePath = remotePath,
+            fileId = fileId,
+            objectId = objectId,
+            size = size,
+            sha256 = sha256,
+            operationId = "",
+            createdAt = now,
+            updatedAt = now
+        ).let { it.copy(operationId = it.id) }
+        taskDao.insertIfAbsent(task)
+    }
+
+    /** 文件列表失败处理「删除」：提交云端删除（产生 file_deleted 事件，其他设备同步移除）。 */
+    suspend fun enqueueFileDeleteTask(
+        spaceId: String,
+        mapping: LocalFolderMapping,
+        localPath: String,
+        fileId: String,
+        baseVersion: Int
+    ) = enqueueMutationTask(
+        spaceId, mapping, SyncTaskType.DELETE,
+        localPath = localPath, remotePath = localPath,
+        fileId = fileId, baseVersion = baseVersion,
+        oldLocalRelativePath = null, now = System.currentTimeMillis()
+    )
+
+    suspend fun upsertIndex(index: LocalFileIndex) = fileDao.upsert(index)
 
     private suspend fun enqueueUploadTask(
         spaceId: String,

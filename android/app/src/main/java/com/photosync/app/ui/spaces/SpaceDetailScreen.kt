@@ -25,7 +25,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.HourglassEmpty
@@ -35,8 +37,11 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
@@ -65,6 +70,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.LocalDevice
 import com.photosync.app.data.local.LocalFolderMapping
+import com.photosync.app.data.local.LocalSyncTask
+import com.photosync.app.data.local.SyncTaskState
 import com.photosync.app.data.remote.JoinRequestDto
 import com.photosync.app.data.remote.SpaceMemberDto
 import com.photosync.app.data.sync.SyncScheduler
@@ -72,6 +79,7 @@ import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SectionHeader
+import com.photosync.app.ui.tasks.TaskPresentation
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
@@ -85,8 +93,7 @@ fun SpaceDetailScreen(
     onEditSpace: (String) -> Unit,
     onAddMapping: (String) -> Unit,
     onOpenMapping: (String) -> Unit,
-    onOpenTrash: (String) -> Unit,
-    onOpenConflicts: (String) -> Unit
+    onOpenTrash: (String) -> Unit
 ) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val context = LocalContext.current
@@ -95,6 +102,8 @@ fun SpaceDetailScreen(
             spaceRepository = app.container.spaceRepository,
             deviceRepository = app.container.deviceRepository,
             syncRepository = app.container.syncRepository,
+            syncEngine = app.container.syncEngine,
+            apiClient = app.container.apiClient,
             scheduleSync = { SyncScheduler.enqueue(app, force = true) },
             spaceId = spaceId
         )
@@ -110,11 +119,18 @@ fun SpaceDetailScreen(
     val loading by viewModel.loading.collectAsStateWithLifecycle()
     val membershipChanging by viewModel.membershipChanging.collectAsStateWithLifecycle()
     val syncStats by viewModel.syncStats.collectAsStateWithLifecycle()
+    val tasks by viewModel.tasks.collectAsStateWithLifecycle()
+    val conflictLocalSizes by viewModel.conflictLocalSizes.collectAsStateWithLifecycle()
+    val resolvingTaskId by viewModel.resolvingTaskId.collectAsStateWithLifecycle()
+    val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var changeTarget by remember { mutableStateOf<LocalFolderMapping?>(null) }
     var manageMembers by rememberSaveable { mutableStateOf(false) }
     var exitConfirm by rememberSaveable { mutableStateOf(false) }
+    // 冲突保留选择：task to keepLocal，确认后才执行
+    var conflictChoice by remember { mutableStateOf<Pair<LocalSyncTask, Boolean>?>(null) }
+    var showStorage by rememberSaveable { mutableStateOf(false) }
     val thisDeviceIsMember = members.any { it.deviceId == viewModel.currentDeviceId }
 
     val directoryLauncher = rememberLauncherForActivityResult(
@@ -241,47 +257,35 @@ fun SpaceDetailScreen(
                         }
                     }
                     item {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.fillMaxWidth()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Text(
-                                    text = when {
-                                        syncStats.failedTasks > 0 -> "${syncStats.failedTasks} 个同步任务需要处理"
-                                        syncStats.runningTasks > 0 -> "正在执行持久化同步任务"
-                                        syncStats.pendingUploads + syncStats.pendingDownloads > 0 -> "等待联网同步"
-                                        else -> "同步任务已处理完成"
-                                    },
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (syncStats.failedTasks > 0) ErrorRed else PrimaryBlue
+                            Text(
+                                text = "本地目录",
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            // 右侧两个图标入口：回收站（左）、云端存储（右）
+                            IconButton(onClick = { onOpenTrash(spaceId) }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = "回收站",
+                                    tint = OnSurfaceMuted
                                 )
-                                Text(
-                                    text = "待上传 ${syncStats.pendingUploads} · 待下载 ${syncStats.pendingDownloads} · 失败 ${syncStats.failedTasks}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = OnSurfaceMuted,
-                                    modifier = Modifier.padding(top = 4.dp)
+                            }
+                            IconButton(onClick = {
+                                showStorage = true
+                                viewModel.loadStorageStats()
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Cloud,
+                                    contentDescription = "云端存储情况",
+                                    tint = PrimaryBlue
                                 )
                             }
                         }
                     }
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { onOpenTrash(spaceId) },
-                                modifier = Modifier.weight(1f)
-                            ) { Text("回收站") }
-                            OutlinedButton(
-                                onClick = { onOpenConflicts(spaceId) },
-                                modifier = Modifier.weight(1f)
-                            ) { Text("冲突处理") }
-                        }
-                    }
-                    item { SectionHeader(title = "本地目录") }
                     if (mappings.isEmpty()) {
                         item {
                             Surface(
@@ -330,6 +334,42 @@ fun SpaceDetailScreen(
                             MemberRow(member = member, thisDeviceId = viewModel.currentDeviceId)
                         }
                     }
+                    item { SectionHeader(title = "同步任务") }
+                    item {
+                        SpaceTaskSummaryCard(
+                            stats = syncStats,
+                            onRetryAllFailed = viewModel::retryAllFailed
+                        )
+                    }
+                    if (tasks.isEmpty()) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                EmptyStateView(
+                                    icon = Icons.Filled.Sync,
+                                    title = "暂无待办任务",
+                                    subtitle = "该空间待上传、待下载、待删除的任务都会在此列出"
+                                )
+                            }
+                        }
+                    } else {
+                        items(tasks, key = { it.id }) { task ->
+                            val conflict = app.container.syncEngine.isResolvablePathConflict(task)
+                            SyncTaskCard(
+                                task = task,
+                                conflictResolvable = conflict,
+                                localSize = conflictLocalSizes[task.id],
+                                resolving = resolvingTaskId == task.id,
+                                onRetry = { viewModel.retryTask(task) },
+                                onCancel = { viewModel.cancelTask(task) },
+                                onKeepLocal = { conflictChoice = task to true },
+                                onKeepCloud = { conflictChoice = task to false }
+                            )
+                        }
+                    }
                     item { Spacer(Modifier.height(12.dp)) }
                 }
             }
@@ -347,6 +387,13 @@ fun SpaceDetailScreen(
         )
     }
 
+    if (showStorage) {
+        StorageStatsSheet(
+            stats = storageStats,
+            onDismiss = { showStorage = false }
+        )
+    }
+
     if (exitConfirm) {
         ConfirmBottomSheet(
             title = "退出空间",
@@ -357,6 +404,106 @@ fun SpaceDetailScreen(
                 exitConfirm = false
             },
             onDismiss = { exitConfirm = false }
+        )
+    }
+
+    conflictChoice?.let { (task, keepLocal) ->
+        val localSizeText = conflictLocalSizes[task.id]?.let { formatFileSize(it) } ?: "未知"
+        val cloudSizeText = formatFileSize(task.size)
+        ConfirmBottomSheet(
+            title = if (keepLocal) "保留本地版本" else "保留云端版本",
+            message = buildString {
+                append(task.remoteRelativePath.substringAfterLast('/'))
+                append('\n')
+                append("云端 $cloudSizeText · 本地 $localSizeText\n\n")
+                if (keepLocal) {
+                    append("确认后将以本地内容覆盖云端同名文件（云端当前版本将被删除替代），保持两端严格一致。")
+                } else {
+                    append("确认后本地当前文件将移入应用回收站，随后重新下载云端版本，保持两端严格一致。")
+                }
+            },
+            confirmText = "确认保留",
+            onConfirm = {
+                viewModel.resolveConflict(task, keepLocal)
+                conflictChoice = null
+            },
+            onDismiss = { conflictChoice = null }
+        )
+    }
+}
+
+/** 云端存储情况弹层：活动文件与回收站的数量/占用。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StorageStatsSheet(
+    stats: StorageStatsUiState?,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(
+                text = "云端存储情况",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(12.dp))
+            when {
+                stats == null || stats.loading -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    }
+                }
+                stats.error != null -> {
+                    Text(
+                        text = stats.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ErrorRed,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+                else -> {
+                    StorageStatsRow("云端文件", "${stats.activeFileCount} 个 · ${formatFileSize(stats.activeSize)}")
+                    StorageStatsRow("回收站", "${stats.trashCount} 个 · ${formatFileSize(stats.trashSize)}")
+                    Text(
+                        text = "回收站中的文件保留 30 天后自动清除；还原或彻底删除可在文件列表操作。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceMuted,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StorageStatsRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = OnSurfaceMuted
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }
@@ -459,6 +606,168 @@ private fun FolderMappingCard(
     }
 }
 
+/** 该空间的任务概况：待处理只统计从未执行的任务（等待执行/等待重试），进行中与失败单独计数。 */
+@Composable
+private fun SpaceTaskSummaryCard(
+    stats: com.photosync.app.data.local.SyncTaskStats,
+    onRetryAllFailed: () -> Unit
+) {
+    val pending = stats.pendingUploads + stats.pendingDownloads + stats.pendingMutations
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(
+                text = when {
+                    stats.failedTasks > 0 -> "${stats.failedTasks} 个任务失败，可重试"
+                    stats.runningTasks > 0 -> "正在执行 ${stats.runningTasks} 个任务"
+                    pending > 0 -> "还有 $pending 个变更待同步"
+                    else -> "没有待处理的同步任务"
+                },
+                fontWeight = FontWeight.SemiBold,
+                color = if (stats.failedTasks > 0) ErrorRed else PrimaryBlue
+            )
+            Text(
+                text = "待处理 $pending（上传 ${stats.pendingUploads} · 下载 ${stats.pendingDownloads} · 删除/重命名 ${stats.pendingMutations}）· 进行中 ${stats.runningTasks} · 失败 ${stats.failedTasks}",
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            if (stats.failedTasks > 0) {
+                TextButton(
+                    onClick = onRetryAllFailed,
+                    contentPadding = PaddingValues(horizontal = 0.dp)
+                ) {
+                    Text("全部重试", color = PrimaryBlue)
+                }
+            }
+        }
+    }
+}
+
+/** 单个同步任务卡片：状态、进度、错误与重试/取消操作；路径冲突失败时提供 本地/云端 保留选择。 */
+@Composable
+private fun SyncTaskCard(
+    task: LocalSyncTask,
+    conflictResolvable: Boolean = false,
+    localSize: Long? = null,
+    resolving: Boolean = false,
+    onRetry: () -> Unit = {},
+    onCancel: () -> Unit = {},
+    onKeepLocal: () -> Unit = {},
+    onKeepCloud: () -> Unit = {}
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = TaskPresentation.typeIcon(task.type),
+                    contentDescription = null,
+                    tint = PrimaryBlue,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = task.remoteRelativePath,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = TaskPresentation.stateIcon(task.state),
+                    contentDescription = null,
+                    tint = TaskPresentation.stateColor(task.state),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = TaskPresentation.stateLabel(task.state),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TaskPresentation.stateColor(task.state),
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Text(
+                text = buildString {
+                    append(TaskPresentation.typeLabel(task.type))
+                    if (task.size > 0) append(" · ${formatFileSize(task.size)}")
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            Text(
+                text = "更新于 ${TaskPresentation.formatTime(task.updatedAt)} · 尝试 ${task.attempt} 次",
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            if (task.state == SyncTaskState.RUNNING && task.size > 0) {
+                Text(
+                    text = "${formatFileSize(task.bytesTransferred)} / ${formatFileSize(task.size)} · ${TaskPresentation.progressText(task.bytesTransferred, task.size)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PrimaryBlue,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+                LinearProgressIndicator(
+                    progress = { (task.bytesTransferred.toFloat() / task.size.toFloat()).coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                )
+            }
+            if (conflictResolvable) {
+                Text(
+                    text = "云端 ${formatFileSize(task.size)} · 本地 ${localSize?.let { formatFileSize(it) } ?: "未知"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PrimaryBlue,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+            val error = TaskPresentation.errorText(task.error)
+            if (error != null) {
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ErrorRed,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+            if (conflictResolvable || TaskPresentation.canRetry(task.state) || TaskPresentation.canCancel(task.state)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (conflictResolvable) {
+                        // 冲突处理按钮靠左：点哪个保留哪个，删掉另外一个，保证两端严格一致
+                        TextButton(
+                            onClick = onKeepLocal,
+                            enabled = !resolving
+                        ) { Text("本地", color = PrimaryBlue) }
+                        TextButton(
+                            onClick = onKeepCloud,
+                            enabled = !resolving
+                        ) { Text("云端", color = PrimaryBlue) }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (TaskPresentation.canCancel(task.state)) {
+                        TextButton(onClick = onCancel) { Text("取消") }
+                    }
+                    if (TaskPresentation.canRetry(task.state)) {
+                        TextButton(onClick = onRetry) { Text("重试", color = PrimaryBlue) }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun MemberRow(member: SpaceMemberDto, thisDeviceId: String?) {
     Surface(
@@ -475,7 +784,7 @@ private fun MemberRow(member: SpaceMemberDto, thisDeviceId: String?) {
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "${member.platform} · ${member.role} · 最近在线 ${formatIsoTime(member.lastSeenAt)}",
+                    text = "${platformLabel(member.platform)} · ${roleLabel(member.role)} · 最近在线 ${formatIsoTime(member.lastSeenAt)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = OnSurfaceMuted
                 )
@@ -542,4 +851,15 @@ private fun MemberManageDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } }
     )
+}
+
+private fun platformLabel(platform: String): String =
+    if (platform.equals("android", ignoreCase = true)) "Android" else platform
+
+private fun roleLabel(role: String): String = when (role) {
+    "owner" -> "所有者"
+    "admin" -> "管理员"
+    "member" -> "成员"
+    "viewer" -> "只读"
+    else -> role
 }

@@ -31,16 +31,10 @@ sealed class Screen(val route: String) {
         companion object { const val ROUTE = "mapping_files/{mappingId}" }
     }
 
-    data object TaskCenter : Screen("tasks")
-
     data object ActivityLog : Screen("activity")
 
     data class SpaceTrash(val spaceId: String) : Screen("trash/$spaceId") {
         companion object { const val ROUTE = "trash/{spaceId}" }
-    }
-
-    data class SpaceConflicts(val spaceId: String) : Screen("conflicts/$spaceId") {
-        companion object { const val ROUTE = "conflicts/{spaceId}" }
     }
 
     data class FileVersions(val fileId: String) : Screen("versions/$fileId") {

@@ -222,6 +222,20 @@ interface ApiService {
         @Query("deviceId") deviceId: String
     ): Response<SpaceSyncStatusResponse>
 
+    @GET("api/v1/spaces/{spaceId}/storage")
+    suspend fun getStorageStats(@Path("spaceId") spaceId: String): Response<SpaceStorageStatsResponse>
+
+    // ---------- sync lock（账号级同步权） ----------
+
+    @POST("api/v1/sync-lock/acquire")
+    suspend fun acquireSyncLock(@Body body: SyncLockRequest): Response<SyncLockResponse>
+
+    @POST("api/v1/sync-lock/heartbeat")
+    suspend fun heartbeatSyncLock(@Body body: SyncLockRequest): Response<SyncLockResponse>
+
+    @POST("api/v1/sync-lock/release")
+    suspend fun releaseSyncLock(@Body body: SyncLockRequest): Response<SyncLockResponse>
+
     @Streaming
     @GET("api/v1/objects/{objectId}/download")
     suspend fun downloadObject(

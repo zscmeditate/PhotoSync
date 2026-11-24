@@ -21,11 +21,26 @@ import com.photosync.app.data.remote.UploadCreateRequest
 import com.photosync.app.data.remote.UploadDto
 import com.photosync.app.data.remote.apiCall
 import com.photosync.app.data.repository.SyncRepository
+import com.photosync.app.data.remote.SyncLockRequest
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** 一次同步运行的结果；RETRY 由 WorkManager 按退避策略再次执行。 */
 enum class SyncRunResult { SUCCESS, RETRY, FAILURE }
+
+/**
+ * 一轮同步持有的账号级同步权租约：服务端同一账号同一时刻只发放给一台设备，
+ * 心跳发现锁被其他设备抢走后置 lost，各任务边界处检查并中断本轮同步（改为等待重试）。
+ */
+class SyncLease {
+    val lost = AtomicBoolean(false)
+}
 
 /** 仅实现 Phase 3 的新增上传与 file_created 增量下载。 */
 class SyncEngine(
@@ -34,10 +49,59 @@ class SyncEngine(
 ) {
     private val api = repository.apiClient.api
 
+    /**
+     * 全量同步入口：先抢账号级同步权（同一账号同时只允许一台设备上传/下载），
+     * 抢不到时整轮 RETRY 等待；同步期间心跳续期，锁丢失即中断让位。
+     */
     suspend fun syncAll(): SyncRunResult {
+        val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
+        val lease = SyncLease()
+        when (val lock = apiCall { api.acquireSyncLock(SyncLockRequest(deviceId)) }) {
+            is ApiResult.Failure -> return if (lock.isNetwork) {
+                SyncRunResult.RETRY
+            } else {
+                // 老版本服务端没有同步锁接口（404）时不阻断同步，退化为并发同步。
+                if (lock.code == "NOT_FOUND") unlockedSyncAll() else SyncRunResult.FAILURE
+            }
+            is ApiResult.Success -> if (!lock.data.acquired) {
+                // 其他设备持有同步权：本轮等待，由 WorkManager 退避后重新抢锁。
+                return SyncRunResult.RETRY
+            }
+        }
+        try {
+            return coroutineScope {
+                val heartbeat = launch { heartbeatLoop(deviceId, lease) }
+                try {
+                    var result = SyncRunResult.SUCCESS
+                    for (spaceId in repository.spaceIds()) {
+                        if (lease.lost.get()) {
+                            result = SyncRunResult.RETRY
+                            break
+                        }
+                        when (syncSpace(spaceId, lease)) {
+                            SyncRunResult.SUCCESS -> Unit
+                            SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) {
+                                result = SyncRunResult.RETRY
+                            }
+                            SyncRunResult.FAILURE -> result = SyncRunResult.FAILURE
+                        }
+                    }
+                    result
+                } finally {
+                    heartbeat.cancel()
+                }
+            }
+        } finally {
+            // 释放同步权；即使锁已被抢走或过期，服务端也会安全忽略。
+            apiCall { api.releaseSyncLock(SyncLockRequest(deviceId)) }
+        }
+    }
+
+    /** 服务端不支持同步锁时的兼容路径：不加锁直接同步各空间。 */
+    private suspend fun unlockedSyncAll(): SyncRunResult {
         var result = SyncRunResult.SUCCESS
         for (spaceId in repository.spaceIds()) {
-            when (syncSpace(spaceId)) {
+            when (syncSpace(spaceId, null)) {
                 SyncRunResult.SUCCESS -> Unit
                 SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) {
                     result = SyncRunResult.RETRY
@@ -48,12 +112,25 @@ class SyncEngine(
         return result
     }
 
-    suspend fun syncSpace(spaceId: String): SyncRunResult {
+    /** 同步期间每 25 秒心跳续期；服务端明确返回未持锁（被抢走/过期）时标记丢失。 */
+    private suspend fun heartbeatLoop(deviceId: String, lease: SyncLease) {
+        while (currentCoroutineContext().isActive && !lease.lost.get()) {
+            delay(LOCK_HEARTBEAT_INTERVAL_MS)
+            when (val result = apiCall { api.heartbeatSyncLock(SyncLockRequest(deviceId)) }) {
+                is ApiResult.Success -> if (!result.data.acquired) lease.lost.set(true)
+                // 网络抖动不视为丢失：锁 TTL 由服务端兜底，任务本身失败也会自然中断同步。
+                is ApiResult.Failure -> Unit
+            }
+        }
+    }
+
+    suspend fun syncSpace(spaceId: String, lease: SyncLease?): SyncRunResult {
         val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
         repository.recoverRunning(spaceId)
         val mappings = repository.activeMappings(spaceId, deviceId)
         try {
             for (mapping in mappings) {
+                if (lease?.lost?.get() == true) return SyncRunResult.RETRY
                 val oldIndex = repository.files(mapping.id)
                 when (val scan = repository.scanMapping(mapping.id)) {
                     is ApiResult.Failure -> return SyncRunResult.FAILURE
@@ -84,6 +161,7 @@ class SyncEngine(
 
         var taskFailed = false
         while (true) {
+            if (lease?.lost?.get() == true) return SyncRunResult.RETRY
             val task = repository.nextPendingUpload(spaceId) ?: break
             when (upload(task)) {
                 SyncRunResult.SUCCESS -> Unit
@@ -92,6 +170,7 @@ class SyncEngine(
             }
         }
         while (true) {
+            if (lease?.lost?.get() == true) return SyncRunResult.RETRY
             val task = repository.nextPendingMutation(spaceId) ?: break
             when (commitMutation(task)) {
                 SyncRunResult.SUCCESS -> Unit
@@ -100,7 +179,7 @@ class SyncEngine(
             }
         }
         // 单个任务失败不应阻断本轮的远端变更拉取：先拉取，再在末尾汇报失败。
-        val pulled = pullChanges(spaceId, deviceId, mappings)
+        val pulled = pullChanges(spaceId, deviceId, mappings, lease)
         return when {
             pulled != SyncRunResult.SUCCESS -> pulled
             taskFailed -> SyncRunResult.FAILURE
@@ -419,7 +498,8 @@ class SyncEngine(
     private suspend fun pullChanges(
         spaceId: String,
         deviceId: String,
-        mappings: List<com.photosync.app.data.local.LocalFolderMapping>
+        mappings: List<com.photosync.app.data.local.LocalFolderMapping>,
+        lease: SyncLease?
     ): SyncRunResult {
         var since = repository.cursor(spaceId, deviceId)?.lastAppliedRevision ?: "0"
         try {
@@ -427,6 +507,9 @@ class SyncEngine(
             val rules = mappings.map {
                 SyncMappingRule(it.id, it.onlyMedia)
             }
+            // 阶段一：先拉取全部远端事件（只读、不确认），逐页校验游标契约。
+            val events = mutableListOf<SyncEventDto>()
+            var previous = since
             while (true) {
                 val changes = when (
                     val result = apiCall { api.getChanges(spaceId, deviceId, since, PAGE_SIZE) }
@@ -441,70 +524,153 @@ class SyncEngine(
                 DecimalContract.revision(changes.serverRevision)
                 DecimalContract.revision(changes.nextRevision)
                 if (changes.events.isEmpty()) {
-                    if (changes.hasMore || DecimalContract.compareRevisions(changes.nextRevision, since) != 0) {
+                    if (events.isEmpty()) {
+                        if (changes.hasMore ||
+                            DecimalContract.compareRevisions(changes.nextRevision, since) != 0
+                        ) {
+                            return SyncRunResult.FAILURE
+                        }
+                        repository.saveCursor(
+                            LocalSyncCursor(
+                                spaceId,
+                                deviceId,
+                                since,
+                                changes.serverRevision,
+                                System.currentTimeMillis()
+                            )
+                        )
+                        return SyncRunResult.SUCCESS
+                    }
+                    // 尾页为空：已收集的事件进入处理阶段，游标随逐条确认推进。
+                    if (changes.hasMore ||
+                        DecimalContract.compareRevisions(changes.nextRevision, previous) != 0
+                    ) {
                         return SyncRunResult.FAILURE
                     }
-                    repository.saveCursor(
-                        LocalSyncCursor(
-                            spaceId,
-                            deviceId,
-                            since,
-                            changes.serverRevision,
-                            System.currentTimeMillis()
-                        )
-                    )
-                    return SyncRunResult.SUCCESS
+                    break
                 }
-
-                var previous = since
                 for (event in changes.events) {
                     val revision = DecimalContract.revision(event.revision)
                     if (DecimalContract.compareRevisions(revision, previous) <= 0) {
                         return SyncRunResult.FAILURE
                     }
-                    when (processEvent(spaceId, deviceId, rules, event)) {
-                        SyncRunResult.SUCCESS -> Unit
-                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                        SyncRunResult.FAILURE -> return SyncRunResult.FAILURE
-                    }
-                    val ack = when (
-                        val result = apiCall {
-                            api.acknowledgeChanges(spaceId, SyncAckRequest(deviceId, revision))
-                        }
-                    ) {
-                        is ApiResult.Failure -> return if (result.isNetwork) {
-                            SyncRunResult.RETRY
-                        } else {
-                            SyncRunResult.FAILURE
-                        }
-                        is ApiResult.Success -> result.data
-                    }
-                    DecimalContract.revision(ack.lastAppliedRevision)
-                    DecimalContract.revision(ack.serverRevision)
-                    if (DecimalContract.compareRevisions(ack.lastAppliedRevision, revision) != 0) {
-                        return SyncRunResult.FAILURE
-                    }
-                    repository.saveCursor(
-                        LocalSyncCursor(
-                            spaceId,
-                            deviceId,
-                            revision,
-                            ack.serverRevision,
-                            System.currentTimeMillis()
-                        )
-                    )
+                    events.add(event)
                     previous = revision
                 }
                 if (DecimalContract.compareRevisions(changes.nextRevision, previous) != 0) {
                     return SyncRunResult.FAILURE
                 }
-                if (!changes.hasMore) return SyncRunResult.SUCCESS
+                if (!changes.hasMore) break
                 since = previous
             }
+
+            // 阶段二：先为所有对象事件预建持久化下载任务（不执行），
+            // 任务中心因此能完整列出待下载清单与剩余数量。
+            if (lease?.lost?.get() == true) return SyncRunResult.RETRY
+            for (event in events) {
+                val payload = event.payload ?: continue
+                if (event.type in OBJECT_EVENT_TYPES) {
+                    planObjectEventTask(spaceId, deviceId, rules, event, payload)
+                }
+            }
+
+            // 阶段三：逐个处理并确认；游标随确认推进，失败时保持不动（下次重拉重试）。
+            for (event in events) {
+                if (lease?.lost?.get() == true) return SyncRunResult.RETRY
+                val revision = DecimalContract.revision(event.revision)
+                when (processEvent(spaceId, deviceId, rules, event)) {
+                    SyncRunResult.SUCCESS -> Unit
+                    SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                    SyncRunResult.FAILURE -> return SyncRunResult.FAILURE
+                }
+                val ack = when (
+                    val result = apiCall {
+                        api.acknowledgeChanges(spaceId, SyncAckRequest(deviceId, revision))
+                    }
+                ) {
+                    is ApiResult.Failure -> return if (result.isNetwork) {
+                        SyncRunResult.RETRY
+                    } else {
+                        SyncRunResult.FAILURE
+                    }
+                    is ApiResult.Success -> result.data
+                }
+                DecimalContract.revision(ack.lastAppliedRevision)
+                DecimalContract.revision(ack.serverRevision)
+                if (DecimalContract.compareRevisions(ack.lastAppliedRevision, revision) != 0) {
+                    return SyncRunResult.FAILURE
+                }
+                repository.saveCursor(
+                    LocalSyncCursor(
+                        spaceId,
+                        deviceId,
+                        revision,
+                        ack.serverRevision,
+                        System.currentTimeMillis()
+                    )
+                )
+            }
+            return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             return SyncRunResult.FAILURE
+        }
+    }
+
+    /**
+     * 规划阶段：为对象事件预建持久化下载任务，只落库不执行任何副作用。
+     * 跳过条件与 applyObjectEvent 的任务创建前检查保持一致；执行阶段通过
+     * (spaceId, eventRevision) 唯一约束复用同一任务，不会重复建任务。
+     */
+    private suspend fun planObjectEventTask(
+        spaceId: String,
+        deviceId: String,
+        mappings: List<SyncMappingRule>,
+        event: SyncEventDto,
+        payload: SyncEventPayloadDto
+    ) {
+        try {
+            val sizeRaw = payload.size ?: return
+            val shaRaw = payload.sha256 ?: return
+            if (payload.fileId.isNullOrBlank() || payload.objectId.isNullOrBlank() ||
+                (payload.version ?: 0) <= 0
+            ) {
+                return
+            }
+            val expectedSha256 = DecimalContract.requireSha256(shaRaw)
+            if (repository.taskForEvent(spaceId, event.revision) != null) return
+            if (mappings.isEmpty()) return
+            val plan = RemoteDownloadPlanner.plan(payload.relativePath ?: "", mappings) ?: return
+            val mapping = repository.mapping(plan.mappingId)
+            if (mapping == null || mapping.spaceId != spaceId || mapping.status != MappingStatus.ACTIVE) {
+                return
+            }
+            val oldIndex = repository.file(mapping.id, plan.localRelativePath)
+            if (event.type == "file_updated" && event.deviceId == deviceId) return
+            if (SyncEventPlanner.shouldSkipOwnEvent(
+                    event.deviceId, deviceId,
+                    oldIndex?.remoteFileId, oldIndex?.sha256,
+                    payload.fileId, expectedSha256
+                )
+            ) {
+                return
+            }
+            repository.getOrCreateDownloadTask(
+                spaceId = spaceId,
+                mappingId = mapping.id,
+                localPath = plan.localRelativePath,
+                remotePath = plan.remoteRelativePath,
+                fileId = payload.fileId,
+                objectId = payload.objectId,
+                size = DecimalContract.long(sizeRaw, "event.payload.size"),
+                sha256 = expectedSha256,
+                revision = event.revision
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 预建失败不阻断同步：执行阶段会按原逻辑重建任务并正确上报错误。
         }
     }
 
@@ -515,6 +681,9 @@ class SyncEngine(
         event: SyncEventDto
     ): SyncRunResult {
         val payload = event.payload ?: return SyncRunResult.FAILURE
+        // 本机尚未绑定任何目录时不确认事件：否则远端已有文件会被当作基线吞掉，
+        // 绑定目录后也无法补下载（例如从设备加入已有空间后尚未选择本地目录）。
+        if (mappings.isEmpty()) return SyncRunResult.RETRY
         return when (event.type) {
             // file_restored 与新建/修改一样需要把对象下载回本地。
             "file_created", "file_updated", "file_restored" ->
@@ -563,13 +732,17 @@ class SyncEngine(
             val oldIndex = repository.file(mapping.id, plan.localRelativePath)
             if (event.type == "file_updated") {
                 // 本设备发起的修改无需再应用；file_created 仍按内容判断避免重复下载。
-                if (event.deviceId == deviceId) return SyncRunResult.SUCCESS
+                if (event.deviceId == deviceId) {
+                    settleSkippedEventTask(spaceId, event.revision)
+                    return SyncRunResult.SUCCESS
+                }
             } else if (SyncEventPlanner.shouldSkipOwnEvent(
                     event.deviceId, deviceId,
                     oldIndex?.remoteFileId, oldIndex?.sha256,
                     payload.fileId, expectedSha256
                 )
             ) {
+                settleSkippedEventTask(spaceId, event.revision)
                 return SyncRunResult.SUCCESS
             }
             // 冲突前置：file_updated 时若本地内容已偏离上次同步版本，先把本地版本保留为冲突副本，
@@ -654,7 +827,10 @@ class SyncEngine(
                         taskId = task.id,
                         input = input,
                         expectedSize = expectedSize,
-                        expectedSha256 = expectedSha256
+                        expectedSha256 = expectedSha256,
+                        onProgress = { transferred ->
+                            repository.updateDownloadProgress(task.id, transferred)
+                        }
                     )
                     repository.markSynced(
                         task,
@@ -863,6 +1039,256 @@ class SyncEngine(
         return SyncRunResult.FAILURE
     }
 
+    /**
+     * 规划阶段已预建下载任务、但执行阶段判定无需下载（如本机事件回声）时，
+     * 把遗留的等待任务标记为完成，避免任务中心出现永远待处理的幽灵任务。
+     */
+    private suspend fun settleSkippedEventTask(spaceId: String, revision: String) {
+        val task = repository.taskForEvent(spaceId, revision) ?: return
+        if (task.state == SyncTaskState.PENDING || task.state == SyncTaskState.RETRY) {
+            repository.completeTask(task)
+        }
+    }
+
+    /**
+     * 任务行是否可提供「本地 / 云端」保留选择：
+     * 仅限下载类任务因目标路径同名冲突（LOCAL_PATH_CONFLICT）失败的场景。
+     */
+    fun isResolvablePathConflict(task: LocalSyncTask): Boolean =
+        task.type == SyncTaskType.DOWNLOAD &&
+            task.state == SyncTaskState.FAILED &&
+            task.error?.startsWith("LOCAL_PATH_CONFLICT") == true &&
+            !task.fileId.isNullOrBlank() &&
+            !task.objectId.isNullOrBlank()
+
+    /** 本地冲突文件大小（用于决策展示）；文件缺失或不可读时返回 null。 */
+    suspend fun localConflictFileSize(task: LocalSyncTask): Long? {
+        val mapping = repository.mapping(task.mappingId) ?: return null
+        return try {
+            fileStore.findTarget(mapping, task.localRelativePath)
+                ?.takeIf { it.isFile }?.length()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 冲突「保留云端」：本地冲突文件移入应用回收站并清索引，任务重新排队以下载云端版本。 */
+    suspend fun resolveConflictKeepCloud(task: LocalSyncTask): String? {
+        return try {
+            val mapping = repository.mapping(task.mappingId) ?: return "映射不存在"
+            if (!fileStore.moveToTrash(mapping, task.localRelativePath)) {
+                return "本地文件已不存在或无法移入回收站"
+            }
+            repository.deleteIndex(task.mappingId, task.localRelativePath)
+            repository.retryTask(task.id)
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "处理失败"
+        }
+    }
+
+    /** 冲突「保留本地」：查询云端当前版本后，把本地内容按 file_updated 覆盖提交，严格对齐两端。 */
+    suspend fun resolveConflictKeepLocal(task: LocalSyncTask): String? {
+        return try {
+            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
+            val mapping = repository.mapping(task.mappingId) ?: return "映射不存在"
+            val fileId = task.fileId ?: return "缺少云端文件标识"
+            val target = fileStore.findTarget(mapping, task.localRelativePath)
+                ?: return "本地文件已不存在"
+            if (!target.isFile) return "本地路径不是文件"
+            val digest = fileStore.digest(target)
+            val versions = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
+                is ApiResult.Failure -> return "查询云端版本失败：${result.message}"
+                is ApiResult.Success -> result.data
+            }
+            val current = versions.versions.firstOrNull() ?: return "云端文件已不存在，无法覆盖"
+            if (current.version <= 0) return "云端版本信息无效"
+            val now = System.currentTimeMillis()
+            val existing = repository.file(task.mappingId, task.localRelativePath)
+            val indexRow = existing ?: LocalFileIndex(
+                id = 0,
+                mappingId = task.mappingId,
+                relativePath = task.localRelativePath,
+                fileName = task.localRelativePath.substringAfterLast('/'),
+                size = digest.size,
+                modifiedAt = now,
+                sha256 = digest.sha256,
+                docUri = target.uri.toString(),
+                status = FileSyncStatus.PENDING_UPLOAD,
+                lastScannedAt = now,
+                remoteFileId = fileId,
+                remoteVersion = current.version
+            )
+            repository.transaction {
+                // 冲突任务就地完成，其职责由覆盖上传任务接管
+                repository.completeTask(task)
+                repository.upsertIndex(
+                    indexRow.copy(
+                        status = FileSyncStatus.PENDING_UPLOAD,
+                        size = digest.size,
+                        sha256 = digest.sha256,
+                        remoteFileId = fileId,
+                        remoteVersion = current.version
+                    )
+                )
+                repository.enqueueOverwriteUpload(
+                    spaceId = task.spaceId,
+                    mapping = mapping,
+                    localPath = task.localRelativePath,
+                    size = digest.size,
+                    sha256 = digest.sha256,
+                    baseVersion = current.version,
+                    fileId = fileId,
+                    now = now
+                )
+            }
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "处理失败"
+        }
+    }
+
+    /** 文件列表条目是否可用 本地/云端/删除 处理：仅限同步失败且仍有云端关联的文件。 */
+    fun isResolvableFileEntry(file: LocalFileIndex): Boolean =
+        file.status == FileSyncStatus.SYNC_ERROR && !file.remoteFileId.isNullOrBlank()
+
+    /**
+     * 文件列表失败处理「保留本地」：以本地内容按 file_updated 覆盖云端当前版本。
+     */
+    suspend fun resolveFileKeepLocal(file: LocalFileIndex): String? {
+        return try {
+            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
+            val mapping = repository.mapping(file.mappingId) ?: return "映射不存在"
+            val fileId = file.remoteFileId ?: return "缺少云端文件标识"
+            val target = fileStore.findTarget(mapping, file.relativePath)
+                ?: return "本地文件已不存在，可改用「删除」"
+            if (!target.isFile) return "本地路径不是文件"
+            val digest = fileStore.digest(target)
+            val versions = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
+                is ApiResult.Failure -> return "查询云端版本失败：${result.message}"
+                is ApiResult.Success -> result.data
+            }
+            val current = versions.versions.firstOrNull() ?: return "云端文件已不存在，无法覆盖"
+            if (current.version <= 0) return "云端版本信息无效"
+            repository.transaction {
+                repository.upsertIndex(
+                    file.copy(
+                        status = FileSyncStatus.PENDING_UPLOAD,
+                        size = digest.size,
+                        sha256 = digest.sha256,
+                        remoteFileId = fileId,
+                        remoteVersion = current.version
+                    )
+                )
+                repository.enqueueOverwriteUpload(
+                    spaceId = mapping.spaceId,
+                    mapping = mapping,
+                    localPath = file.relativePath,
+                    size = digest.size,
+                    sha256 = digest.sha256,
+                    baseVersion = current.version,
+                    fileId = fileId,
+                    now = System.currentTimeMillis()
+                )
+            }
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "处理失败"
+        }
+    }
+
+    /**
+     * 文件列表失败处理「保留云端」：本地文件移入应用回收站、清索引，
+     * 并按云端最新对象补建下载任务（无需依赖事件游标）。
+     */
+    suspend fun resolveFileKeepCloud(file: LocalFileIndex): String? {
+        return try {
+            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
+            val mapping = repository.mapping(file.mappingId) ?: return "映射不存在"
+            val fileId = file.remoteFileId ?: return "缺少云端文件标识"
+            val versions = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
+                is ApiResult.Failure -> return "查询云端版本失败：${result.message}"
+                is ApiResult.Success -> result.data
+            }
+            val current = versions.versions.firstOrNull() ?: return "云端文件已不存在，可改用「删除」"
+            val currentSha = current.sha256
+            if (current.objectId.isBlank() || current.version <= 0 || currentSha.isNullOrBlank()) {
+                return "云端版本信息无效"
+            }
+            // 本地文件可能已不存在：缺失时直接重建下载即可
+            fileStore.findTarget(mapping, file.relativePath)?.let {
+                if (!fileStore.moveToTrash(mapping, file.relativePath)) {
+                    return "本地文件无法移入回收站"
+                }
+            }
+            repository.transaction {
+                repository.deleteIndex(file.mappingId, file.relativePath)
+                repository.enqueueFileDownloadTask(
+                    spaceId = mapping.spaceId,
+                    mappingId = mapping.id,
+                    localPath = file.relativePath,
+                    fileId = fileId,
+                    objectId = current.objectId,
+                    size = current.size.toLongOrNull() ?: 0L,
+                    sha256 = currentSha
+                )
+            }
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "处理失败"
+        }
+    }
+
+    /**
+     * 文件列表失败处理「删除」：本地文件移入应用回收站、清索引，
+     * 并提交云端删除（file_deleted 事件会让其他设备同步移除本地副本）。
+     */
+    suspend fun resolveFileDeleteBoth(file: LocalFileIndex): String? {
+        return try {
+            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
+            val mapping = repository.mapping(file.mappingId) ?: return "映射不存在"
+            val fileId = file.remoteFileId ?: return "缺少云端文件标识"
+            // 本地文件可能已不存在：缺失时跳过移入回收站
+            fileStore.findTarget(mapping, file.relativePath)?.let {
+                if (!fileStore.moveToTrash(mapping, file.relativePath)) {
+                    return "本地文件无法移入回收站"
+                }
+            }
+            val current = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
+                is ApiResult.Failure -> null
+                is ApiResult.Success -> result.data.versions.firstOrNull()
+            }
+            repository.transaction {
+                repository.deleteIndex(file.mappingId, file.relativePath)
+                // 云端已不存在时无需提交删除，仅清理本地
+                if (current != null && current.version > 0) {
+                    repository.enqueueFileDeleteTask(
+                        spaceId = mapping.spaceId,
+                        mapping = mapping,
+                        localPath = file.relativePath,
+                        fileId = fileId,
+                        baseVersion = current.version
+                    )
+                }
+            }
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "处理失败"
+        }
+    }
+
     private suspend fun failDownload(
         task: LocalSyncTask,
         code: String,
@@ -994,5 +1420,11 @@ class SyncEngine(
         const val PAGE_SIZE = 100
         const val MAX_MANIFEST_FILES = 10000
         const val OBJECT_NOT_FOUND = "OBJECT_NOT_FOUND"
+
+        /** 同步权心跳间隔：小于服务端 SYNC_LOCK_TTL_MS（默认 90s），保证持续续期 */
+        const val LOCK_HEARTBEAT_INTERVAL_MS = 25_000L
+
+        /** 需要下载对象的远端事件类型（file_restored 与新建/修改一样需要下载）。 */
+        val OBJECT_EVENT_TYPES = setOf("file_created", "file_updated", "file_restored")
     }
 }

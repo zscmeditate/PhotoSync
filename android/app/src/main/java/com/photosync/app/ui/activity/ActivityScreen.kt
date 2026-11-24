@@ -34,7 +34,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.LocalSyncTask
-import com.photosync.app.data.sync.SyncScheduler
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.spaces.SpacePageHeader
 import com.photosync.app.ui.tasks.SyncTasksViewModel
@@ -47,7 +46,7 @@ import com.photosync.app.ui.theme.PrimaryBlue
 fun ActivityScreen(onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val viewModel: SyncTasksViewModel = viewModel {
-        SyncTasksViewModel(app.container.syncRepository) { SyncScheduler.enqueue(app, force = true) }
+        SyncTasksViewModel(app.container.syncRepository)
     }
     val tasks by viewModel.recent.collectAsStateWithLifecycle()
     val grouped = remember(tasks) {
@@ -66,7 +65,7 @@ fun ActivityScreen(onBack: () -> Unit) {
                     EmptyStateView(
                         icon = Icons.Filled.History,
                         title = "暂无活动",
-                        subtitle = "完成一次同步后，这里会按时间记录上传、下载与冲突处理"
+                        subtitle = "完成一次同步后，这里会按时间记录上传、下载、删除与重命名"
                     )
                 }
             } else {

@@ -235,7 +235,8 @@ class SafFileStore(private val context: Context) {
         taskId: String,
         input: InputStream,
         expectedSize: Long,
-        expectedSha256: String
+        expectedSha256: String,
+        onProgress: suspend (Long) -> Unit = {}
     ): DocumentFile = withContext(Dispatchers.IO) {
         val segments = validatedSegments(localRelativePath)
         val fileName = segments.last()
@@ -270,6 +271,7 @@ class SafFileStore(private val context: Context) {
 
             output.use { stream ->
                 val buffer = ByteArray(BUFFER_SIZE)
+                var lastReported = 0L
                 while (true) {
                     coroutineContext.ensureActive()
                     val count = input.read(buffer)
@@ -278,6 +280,11 @@ class SafFileStore(private val context: Context) {
                         stream.write(buffer, 0, count)
                         digest.update(buffer, 0, count)
                         size += count
+                        // 节流上报下载进度（每 256KB），供任务中心的进度条实时展示。
+                        if (size - lastReported >= PROGRESS_REPORT_STEP) {
+                            lastReported = size
+                            onProgress(size)
+                        }
                     }
                 }
                 stream.flush()
@@ -420,6 +427,9 @@ class SafFileStore(private val context: Context) {
 
     private companion object {
         const val BUFFER_SIZE = 64 * 1024
+
+        /** 下载进度上报步长：每写入 256KB 更新一次任务进度 */
+        const val PROGRESS_REPORT_STEP = 256L * 1024L
     }
 }
 

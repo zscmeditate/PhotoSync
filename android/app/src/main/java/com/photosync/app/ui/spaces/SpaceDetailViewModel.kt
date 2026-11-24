@@ -5,14 +5,19 @@ import androidx.lifecycle.viewModelScope
 import com.photosync.app.data.local.LocalDevice
 import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.local.LocalSpace
+import com.photosync.app.data.local.LocalSyncTask
 import com.photosync.app.data.local.MappingFileCount
+import com.photosync.app.data.local.SyncTaskState
 import com.photosync.app.data.local.SyncTaskStats
 import com.photosync.app.data.remote.ApiResult
 import com.photosync.app.data.remote.JoinRequestDto
 import com.photosync.app.data.remote.SpaceMemberDto
+import com.photosync.app.data.remote.ApiClient
 import com.photosync.app.data.repository.DeviceRepository
 import com.photosync.app.data.repository.SpaceRepository
 import com.photosync.app.data.repository.SyncRepository
+import com.photosync.app.data.sync.SyncEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -29,6 +34,8 @@ class SpaceDetailViewModel(
     private val spaceRepository: SpaceRepository,
     private val deviceRepository: DeviceRepository,
     private val syncRepository: SyncRepository,
+    private val syncEngine: SyncEngine,
+    private val apiClient: ApiClient,
     private val scheduleSync: () -> Unit,
     private val spaceId: String
 ) : ViewModel() {
@@ -49,6 +56,29 @@ class SpaceDetailViewModel(
 
     val syncStats: StateFlow<SyncTaskStats> = syncRepository.observeStats(spaceId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncTaskStats())
+
+    /** 该空间的同步任务：进行中、待处理与失败，按空间隔离。 */
+    val tasks: StateFlow<List<LocalSyncTask>> = syncRepository.observeActiveTasks(spaceId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 可用「本地 / 云端」保留的冲突任务 → 本地文件大小（用于决策展示）。 */
+    val conflictLocalSizes: StateFlow<Map<String, Long>> = tasks
+        .map { list ->
+            list.filter { syncEngine.isResolvablePathConflict(it) }
+                .mapNotNull { task ->
+                    syncEngine.localConflictFileSize(task)?.let { task.id to it }
+                }
+                .toMap()
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /** 正在处理中的冲突任务，防止重复提交。 */
+    private val _resolvingTaskId = MutableStateFlow<String?>(null)
+    val resolvingTaskId: StateFlow<String?> = _resolvingTaskId.asStateFlow()
+
+    /** 云端存储统计（「本地目录」右侧「云端」按钮展示用）。 */
+    private val _storageStats = MutableStateFlow<StorageStatsUiState?>(null)
+    val storageStats: StateFlow<StorageStatsUiState?> = _storageStats.asStateFlow()
 
     val devices: StateFlow<List<LocalDevice>> = deviceRepository.devices
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -157,8 +187,89 @@ class SpaceDetailViewModel(
         }
     }
 
+    /** 重新排队单个任务（待处理/等待重试/失败均可重试）。 */
+    fun retryTask(task: LocalSyncTask) {
+        viewModelScope.launch {
+            syncRepository.retryTask(task.id)
+            scheduleSync()
+            _messages.emit("已重新排队：${task.remoteRelativePath.substringAfterLast('/')}")
+        }
+    }
+
+    /** 取消尚未执行或已失败的任务；运行中的任务由 Worker 自行结束。 */
+    fun cancelTask(task: LocalSyncTask) {
+        viewModelScope.launch {
+            syncRepository.cancelTask(task.id)
+            _messages.emit("已取消：${task.remoteRelativePath.substringAfterLast('/')}")
+        }
+    }
+
+    /** 把该空间所有失败任务重新排队（对象已永久丢失的任务除外）。 */
+    fun retryAllFailed() {
+        viewModelScope.launch {
+            val failed = tasks.value.filter { it.state == SyncTaskState.FAILED }
+            if (failed.isEmpty()) {
+                _messages.emit("没有失败任务")
+                return@launch
+            }
+            failed.forEach { syncRepository.retryTask(it.id) }
+            scheduleSync()
+            _messages.emit("已重新排队 ${failed.size} 个失败任务")
+        }
+    }
+
+    /** 冲突解决：保留本地（覆盖云端）或保留云端（移走本地重新下载）。 */
+    fun resolveConflict(task: LocalSyncTask, keepLocal: Boolean) {
+        if (_resolvingTaskId.value != null) return
+        viewModelScope.launch {
+            _resolvingTaskId.value = task.id
+            val error = if (keepLocal) {
+                syncEngine.resolveConflictKeepLocal(task)
+            } else {
+                syncEngine.resolveConflictKeepCloud(task)
+            }
+            _resolvingTaskId.value = null
+            if (error == null) {
+                _messages.emit(
+                    if (keepLocal) "已选择保留本地版本，正在覆盖云端"
+                    else "已选择保留云端版本，本地文件已移入回收站，将重新下载"
+                )
+                scheduleSync()
+            } else {
+                _messages.emit("处理失败：$error")
+            }
+        }
+    }
+
     fun showMessage(message: String) {
         viewModelScope.launch { _messages.emit(message) }
+    }
+
+    /** 拉取空间云端存储统计（活动文件 + 回收站占用）。 */
+    fun loadStorageStats() {
+        if (_storageStats.value?.loading == true) return
+        viewModelScope.launch {
+            _storageStats.value = StorageStatsUiState(loading = true)
+            _storageStats.value = try {
+                val response = apiClient.api.getStorageStats(spaceId)
+                val body = response.body()
+                if (response.isSuccessful && body != null) {
+                    StorageStatsUiState(
+                        loading = false,
+                        activeFileCount = body.activeFileCount,
+                        activeSize = body.activeSize.toLongOrNull() ?: 0L,
+                        trashCount = body.trashCount,
+                        trashSize = body.trashSize.toLongOrNull() ?: 0L
+                    )
+                } else {
+                    StorageStatsUiState(loading = false, error = "加载失败（${response.code()}）")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                StorageStatsUiState(loading = false, error = e.message ?: "网络异常")
+            }
+        }
     }
 
     /** 更改本地目录绑定；空间必须始终绑定一个目录，因此只允许替换。 */
@@ -191,9 +302,15 @@ class SpaceDetailViewModel(
             }
             when (result) {
                 is ApiResult.Success -> {
+                    val deviceName = devices.value.firstOrNull { it.id == deviceId }?.deviceName
+                    val isSelf = deviceId == currentDeviceId
                     _messages.emit(
-                        if (join) "设备已加入空间，请绑定本地目录"
-                        else "已退出空间，本机目录绑定已解除；可在「加入空间」中重新加入"
+                        when {
+                            join && isSelf -> "本机已加入空间，请绑定本地目录"
+                            join -> "已将「${deviceName ?: "该设备"}」加入空间，请在该设备上绑定本地目录"
+                            isSelf -> "已退出空间，本机目录绑定已解除；可在「加入空间」中重新加入"
+                            else -> "已将「${deviceName ?: "该设备"}」移出空间，其目录绑定已解除"
+                        }
                     )
                     loadRemote()
                 }
@@ -203,3 +320,13 @@ class SpaceDetailViewModel(
         }
     }
 }
+
+/** 云端存储统计的 UI 状态。 */
+data class StorageStatsUiState(
+    val loading: Boolean,
+    val activeFileCount: Int = 0,
+    val activeSize: Long = 0,
+    val trashCount: Int = 0,
+    val trashSize: Long = 0,
+    val error: String? = null
+)
