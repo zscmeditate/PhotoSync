@@ -264,6 +264,14 @@ class SpaceDetailViewModel(
         }
     }
 
+    /** 清空当前空间的已完成任务。 */
+    fun clearCompleted() {
+        viewModelScope.launch {
+            val n = syncRepository.clearCompletedBySpace(spaceId)
+            _messages.emit("已清空 $n 条完成记录")
+        }
+    }
+
     /** 任务卡片取消：进行中的上传/下载移到队列末尾（保留任务），其余未完成任务直接移除。 */
     fun cancelTask(task: LocalSyncTask) {
         viewModelScope.launch {

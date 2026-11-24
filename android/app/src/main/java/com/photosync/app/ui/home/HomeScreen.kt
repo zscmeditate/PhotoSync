@@ -47,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -103,6 +104,13 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val spaceViewModel: SpaceListViewModel = viewModel {
         SpaceListViewModel(app.container.spaceRepository, app.container.deviceRepository)
+    }
+
+    // 切 Tab 到首页或同步空间时，自动从服务端拉一次最新空间列表（30 秒节流在 refresh 内部）。
+    LaunchedEffect(tab) {
+        if (tab == HomeTab.OVERVIEW || tab == HomeTab.FILES) {
+            spaceViewModel.refresh()
+        }
     }
 
     // 首页是导航根页面：连续两次返回（间隔 2 秒内）才退出应用，第一次给轻量 Toast 提示。

@@ -17,13 +17,21 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -38,6 +46,7 @@ import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.spaces.SpacePageHeader
 import com.photosync.app.ui.tasks.SyncTasksViewModel
 import com.photosync.app.ui.tasks.TaskPresentation
+import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 
@@ -52,39 +61,83 @@ fun ActivityScreen(spaceId: String? = null, onBack: () -> Unit) {
     val grouped = remember(tasks) {
         tasks.groupBy { TaskPresentation.formatDate(it.updatedAt) }
     }
+    val snackbarHostState = remember { SnackbarHostState() }
+    var showClearConfirm by rememberSaveable { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-        SpacePageHeader(title = "同步日志", onBack = onBack)
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (grouped.isEmpty()) {
-                item {
-                    EmptyStateView(
-                        icon = Icons.Filled.History,
-                        title = "暂无同步日志",
-                        subtitle = "完成一次同步后，这里会按时间记录上传、下载、删除与重命名"
-                    )
+    LaunchedEffect(Unit) {
+        viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
+    }
+
+    Box(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            SpacePageHeader(
+                title = "同步日志",
+                onBack = onBack,
+                actions = {
+                    if (tasks.isNotEmpty()) {
+                        TextButton(
+                            onClick = { showClearConfirm = true },
+                            contentPadding = PaddingValues(horizontal = 8.dp)
+                        ) {
+                            Text("清空", color = OnSurfaceMuted, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                 }
-            } else {
-                grouped.forEach { (date, items) ->
-                    item(key = "header-$date") {
-                        Text(
-                            text = date,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = OnSurfaceMuted,
-                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (grouped.isEmpty()) {
+                    item {
+                        EmptyStateView(
+                            icon = Icons.Filled.History,
+                            title = "暂无同步日志",
+                            subtitle = "完成一次同步后，这里会按时间记录上传、下载、删除与重命名"
                         )
                     }
-                    items(items, key = { it.id }) { task ->
-                        ActivityRow(task)
+                } else {
+                    grouped.forEach { (date, items) ->
+                        item(key = "header-$date") {
+                            Text(
+                                text = date,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = OnSurfaceMuted,
+                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                            )
+                        }
+                        items(items, key = { it.id }) { task ->
+                            ActivityRow(task)
+                        }
                     }
                 }
+                item { Spacer(Modifier.size(16.dp)) }
             }
-            item { Spacer(Modifier.size(16.dp)) }
         }
+        SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("清空同步日志") },
+            text = {
+                val scope = if (spaceId != null) "该空间的" else "所有"
+                Text("确定要清空${scope}同步日志吗？共 ${tasks.size} 条记录将被删除，此操作不可恢复。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearConfirm = false
+                    viewModel.clearLog()
+                }) {
+                    Text("清空", color = ErrorRed)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
+            }
+        )
     }
 }
 
@@ -131,7 +184,7 @@ private fun ActivityRow(task: LocalSyncTask) {
                     Text(
                         text = error,
                         style = MaterialTheme.typography.bodySmall,
-                        color = com.photosync.app.ui.theme.ErrorRed,
+                        color = ErrorRed,
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }

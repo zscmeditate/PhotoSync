@@ -52,6 +52,15 @@ class SyncRepository(
 
     suspend fun cancelTask(taskId: String) = taskDao.cancelTask(taskId)
 
+    /** 清空指定空间的已完成任务记录。 */
+    suspend fun clearCompletedBySpace(spaceId: String) = taskDao.clearCompletedBySpace(spaceId)
+
+    /** 清空指定空间的全部同步任务（同步日志），返回删除行数。 */
+    suspend fun clearTasksBySpace(spaceId: String) = taskDao.clearTasksBySpace(spaceId)
+
+    /** 清空全部同步任务（同步日志），返回删除行数。 */
+    suspend fun clearAllTasks() = taskDao.clearAllTasks()
+
     /** 取消进行中的上传/下载：保留任务并移到队列末尾，而不是丢弃。 */
     suspend fun moveRunningTaskToQueueEnd(taskId: String) =
         taskDao.moveRunningTaskToQueueEnd(taskId, System.currentTimeMillis())

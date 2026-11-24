@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 主体：6 片光圈叶片 + 旋转暗示同步 -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="22">
+
+        <!-- 叶片 -->
+        <path
+            android:pathData="
+                M54,26
+                L64,46
+                Q54,50 44,46
+                Z"
+            android:fillColor="#FFFFFF" />
+
+        <path
+            android:pathData="
+                M78,40
+                L68,50
+                Q64,40 72,32
+                Z"
+            android:fillColor="#FFFFFF" />
+
+        <path
+            android:pathData="
+                M78,68
+                L68,58
+                Q78,54 82,62
+                Z"
+            android:fillColor="#FFFFFF" />
+
+        <path
+            android:pathData="
+                M54,82
+                L44,62
+                Q54,58 64,62
+                Z"
+            android:fillColor="#FFFFFF" />
+
+        <path
+            android:pathData="
+                M30,68
+                L40,58
+                Q30,54 26,62
+                Z"
+            android:fillColor="#FFFFFF" />
+
+        <path
+            android:pathData="
+                M30,40
+                L40,50
+                Q44,40 36,32
+                Z"
+            android:fillColor="#FFFFFF" />
+
+        <!-- 中心通孔 -->
+        <path
+            android:pathData="M54,46 A8,8 0 1,1 54,62 A8,8 0 1,1 54,46 Z"
+            android:fillColor="#2563EB" />
+
+    </group>
+
+    <!-- 外围同步弧线 -->
+    <path
+        android:pathData="M84,26 A36,36 0 1,0 76,76"
+        android:strokeColor="#FFFFFFCC"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <!-- 弧线末端箭头 -->
+    <path
+        android:pathData="M73,71 L78,76 L74,80"
+        android:strokeColor="#FFFFFFCC"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+
+</vector>

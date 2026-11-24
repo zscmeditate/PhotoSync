@@ -65,14 +65,23 @@ class SpaceListViewModel(
     private val _membershipChanging = MutableStateFlow<String?>(null)
     val membershipChanging: StateFlow<String?> = _membershipChanging.asStateFlow()
 
+    /** 上次从服务端拉空间列表的时间戳（System.currentTimeMillis）。 */
+    @Volatile
+    var lastRefreshAt: Long = 0L
+        private set
+
     init {
         refresh()
     }
 
-    fun refresh() {
+    /** 强制刷新；默认 30 秒内不重复请求（手动或切 Tab 触发）。 */
+    fun refresh(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastRefreshAt < REFRESH_INTERVAL_MS) return
         if (_refreshing.value) return
         viewModelScope.launch {
             _refreshing.value = true
+            lastRefreshAt = System.currentTimeMillis()
             when (val result = spaceRepository.refreshSpaces()) {
                 is ApiResult.Success -> _loadError.value = null
                 is ApiResult.Failure -> {
@@ -85,6 +94,11 @@ class SpaceListViewModel(
             deviceRepository.refreshDevices()
             _refreshing.value = false
         }
+    }
+
+    companion object {
+        /** 切 Tab 自动刷新的最小间隔，避免频繁请求。 */
+        private const val REFRESH_INTERVAL_MS = 30_000L
     }
 
     /** 并发加载每个空间的参与设备；单个空间失败不影响其他空间展示。 */

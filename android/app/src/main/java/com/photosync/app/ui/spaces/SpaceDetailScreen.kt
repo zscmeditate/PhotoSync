@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -125,6 +126,7 @@ fun SpaceDetailScreen(
     var showStorage by rememberSaveable { mutableStateOf(false) }
     // 任务筛选：null = 全部；再点一次已选中的筛选可取消
     var taskFilter by rememberSaveable { mutableStateOf<TaskFilter?>(null) }
+    var showClearConfirm by rememberSaveable { mutableStateOf(false) }
 
     val filteredTasks = remember(tasks, taskFilter) {
         tasks
@@ -374,6 +376,14 @@ fun SpaceDetailScreen(
                                     Text("全部重试", color = PrimaryBlue, style = MaterialTheme.typography.bodyMedium)
                                 }
                             }
+                            if (taskFilter == TaskFilter.SUCCESS && successCount > 0) {
+                                TextButton(
+                                    onClick = { showClearConfirm = true },
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Text("清空", color = OnSurfaceMuted, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
                         }
                     }
                     if (filteredTasks.isEmpty()) {
@@ -406,6 +416,25 @@ fun SpaceDetailScreen(
             }
         }
         SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("清空已完成任务") },
+            text = { Text("确定要清空这 $successCount 条已完成的同步记录吗？此操作不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearConfirm = false
+                    viewModel.clearCompleted()
+                }) {
+                    Text("清空", color = ErrorRed)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
+            }
+        )
     }
 
     if (showStorage) {

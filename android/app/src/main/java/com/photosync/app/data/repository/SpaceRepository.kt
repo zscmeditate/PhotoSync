@@ -602,7 +602,7 @@ class SpaceRepository(
 
     suspend fun clearCache() {
         database.withTransaction {
-            syncTaskDao.clear()
+            syncTaskDao.clearAllTasks()
             syncCursorDao.clear()
             fileDao.clear()
             mappingDao.clear()

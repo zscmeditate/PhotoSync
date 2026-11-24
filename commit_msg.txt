@@ -1,0 +1,17 @@
+feat: createSpace auto-adds all same-account devices as members + UI improvements
+
+Server:
+- createSpace() now auto-adds all registered same-account devices as members
+  (each with independent SyncCursor). After this fix, creating a space from
+  any primary device makes it instantly visible on every other device using
+  the same account.
+
+Android:
+- App icon: aperture blades + sync arc + gradient bg (adaptive v26 + fallback)
+- Task list: add clear button (w/ AlertDialog confirm) when on SUCCESS filter
+- Activity log: add clear button (w/ AlertDialog confirm, scope-aware)
+- SpaceListViewModel.refresh(): 30s throttle added, manual refresh bypasses it
+- HomeScreen: auto-trigger refresh() when switching to OVERVIEW or FILES tab
+- LocalSyncTaskDao: clearCompletedBySpace now returns Int (was Unit -> "kotlin.Unit")
+- DAO: added clearTasksBySpace / clearAllTasks for log clearing
+- remove debug logging interceptor (diagnostic-only)

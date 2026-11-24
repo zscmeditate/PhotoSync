@@ -81,7 +81,7 @@ fun SpaceListScreen(
             SpacePageHeader(
                 title = "同步空间",
                 actions = {
-                    IconButton(onClick = viewModel::refresh) {
+                    IconButton(onClick = { viewModel.refresh(force = true) }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "刷新空间")
                     }
                     IconButton(onClick = onJoinSpace) {

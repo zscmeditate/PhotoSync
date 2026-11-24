@@ -305,8 +305,17 @@ interface LocalSyncTaskDao {
     @Query("DELETE FROM local_sync_tasks WHERE spaceId = :spaceId")
     suspend fun deleteBySpace(spaceId: String)
 
+    /** 清空指定空间的已完成任务，返回删除行数。 */
+    @Query("DELETE FROM local_sync_tasks WHERE spaceId = :spaceId AND state = 'COMPLETED'")
+    suspend fun clearCompletedBySpace(spaceId: String): Int
+
+    /** 清空指定空间的全部同步任务（含进行中、失败、已完成），返回删除行数。 */
+    @Query("DELETE FROM local_sync_tasks WHERE spaceId = :spaceId")
+    suspend fun clearTasksBySpace(spaceId: String): Int
+
+    /** 清空全部同步任务，返回删除行数。 */
     @Query("DELETE FROM local_sync_tasks")
-    suspend fun clear()
+    suspend fun clearAllTasks(): Int
 }
 
 @Dao
