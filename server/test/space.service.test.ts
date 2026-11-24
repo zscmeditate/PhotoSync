@@ -210,16 +210,17 @@ describe('SpaceService 空间修改与删除权限', () => {
     expect(spaces.spaces.has(space.id)).toBe(false);
   });
 
-  it('从设备不能改名也不能删除空间', async () => {
+  it('从设备（非管理员角色）不能改名也不能删除空间', async () => {
     const { service, devices, spaces, device, space, userId } = await setupSpace();
     const secondary = await addDevice(devices, userId);
     seedMembership(spaces, space.id, secondary.id, 'member');
     spaces.members.get(`${space.id}:${device.id}`)!.role = 'member';
 
+    // 管理员判定基于成员角色：member 角色即使从设备也不允许改名（SPACE_FORBIDDEN）
     await expectAppError(
       () => service.updateSpace(userId, secondary.id, space.id, { name: 'Forbidden' }),
       403,
-      'DEVICE_NOT_PRIMARY',
+      'SPACE_FORBIDDEN',
     );
     await expectAppError(
       () => service.deleteSpace(userId, secondary.id, space.id),

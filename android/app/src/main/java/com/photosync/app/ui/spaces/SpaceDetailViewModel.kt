@@ -2,21 +2,21 @@ package com.photosync.app.ui.spaces
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.photosync.app.data.local.LocalDevice
 import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.local.LocalSpace
 import com.photosync.app.data.local.LocalSyncTask
 import com.photosync.app.data.local.MappingFileCount
 import com.photosync.app.data.local.SyncTaskState
 import com.photosync.app.data.local.SyncTaskStats
+import com.photosync.app.data.local.SyncTaskType
 import com.photosync.app.data.remote.ApiResult
 import com.photosync.app.data.remote.JoinRequestDto
-import com.photosync.app.data.remote.SpaceMemberDto
 import com.photosync.app.data.remote.ApiClient
 import com.photosync.app.data.repository.DeviceRepository
 import com.photosync.app.data.repository.SpaceRepository
 import com.photosync.app.data.repository.SyncRepository
 import com.photosync.app.data.sync.SyncEngine
+import com.photosync.app.data.sync.SyncRunResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,39 +57,100 @@ class SpaceDetailViewModel(
     val syncStats: StateFlow<SyncTaskStats> = syncRepository.observeStats(spaceId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncTaskStats())
 
-    /** 该空间的同步任务：进行中、待处理与失败，按空间隔离。 */
-    val tasks: StateFlow<List<LocalSyncTask>> = syncRepository.observeActiveTasks(spaceId)
+    /** 该空间的最近同步任务（含已完成，供筛选器展示），按空间隔离。 */
+    val tasks: StateFlow<List<LocalSyncTask>> = syncRepository.observeRecentTasks(spaceId, 200)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** 可用「本地 / 云端」保留的冲突任务 → 本地文件大小（用于决策展示）。 */
-    val conflictLocalSizes: StateFlow<Map<String, Long>> = tasks
-        .map { list ->
-            list.filter { syncEngine.isResolvablePathConflict(it) }
-                .mapNotNull { task ->
-                    syncEngine.localConflictFileSize(task)?.let { task.id to it }
-                }
-                .toMap()
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
-
-    /** 正在处理中的冲突任务，防止重复提交。 */
+    /** 正在处理中的任务，防止重复提交。 */
     private val _resolvingTaskId = MutableStateFlow<String?>(null)
     val resolvingTaskId: StateFlow<String?> = _resolvingTaskId.asStateFlow()
+
+    /** 任务列表失败详情弹层状态：点击失败任务的「处理」后加载云端/本地文件信息。 */
+    private val _taskFailureDetail = MutableStateFlow<FailureDetailUi?>(null)
+    val taskFailureDetail: StateFlow<FailureDetailUi?> = _taskFailureDetail.asStateFlow()
+
+    /** 当前处理面板对应的任务（供面板内的重试/取消操作与按钮可用性判断）。 */
+    private val _detailTask = MutableStateFlow<LocalSyncTask?>(null)
+    val detailTask: StateFlow<LocalSyncTask?> = _detailTask.asStateFlow()
+
+    fun openTaskFailureDetail(task: LocalSyncTask) {
+        if (_taskFailureDetail.value?.loading == true) return
+        _detailTask.value = task
+        viewModelScope.launch {
+            val index = syncEngine.taskFailureIndex(task)
+            _taskFailureDetail.value = FailureDetailUi(file = index, loading = true)
+            _taskFailureDetail.value = FailureDetailUi(
+                file = index,
+                loading = false,
+                info = syncEngine.fileFailureInfo(index)
+            )
+        }
+    }
+
+    fun closeTaskFailureDetail() {
+        _detailTask.value = null
+        _taskFailureDetail.value = null
+    }
+
+    /** 处理面板内重试当前任务。 */
+    fun retryDetailTask() {
+        val task = _detailTask.value ?: return
+        viewModelScope.launch {
+            syncRepository.retryTask(task.id)
+            closeTaskFailureDetail()
+            scheduleSync()
+            _messages.emit("已重新排队：${task.remoteRelativePath.substringAfterLast('/')}")
+        }
+    }
+
+    /** 处理面板内取消当前任务。 */
+    fun cancelDetailTask() {
+        val task = _detailTask.value ?: return
+        viewModelScope.launch {
+            syncRepository.cancelTask(task.id)
+            closeTaskFailureDetail()
+            _messages.emit("已取消：${task.remoteRelativePath.substringAfterLast('/')}")
+        }
+    }
+
+    /** 任务失败处理：保留本地 / 保留云端 / 两端都删除，成功后收尾旧失败任务。 */
+    fun resolveTaskFile(action: FileResolveAction) {
+        if (_resolvingTaskId.value != null) return
+        val task = _detailTask.value ?: return
+        viewModelScope.launch {
+            _resolvingTaskId.value = task.id
+            val index = syncEngine.taskFailureIndex(task)
+            val error = when (action) {
+                FileResolveAction.KEEP_LOCAL -> syncEngine.resolveFileKeepLocal(index)
+                FileResolveAction.KEEP_CLOUD -> syncEngine.resolveFileKeepCloud(index)
+                FileResolveAction.DELETE_BOTH -> syncEngine.resolveFileDeleteBoth(index)
+            }
+            _resolvingTaskId.value = null
+            if (error == null) {
+                syncRepository.cancelTask(task.id)
+                closeTaskFailureDetail()
+                scheduleSync()
+                _messages.emit(
+                    when (action) {
+                        FileResolveAction.KEEP_LOCAL -> "已保留本地版本，正在覆盖云端"
+                        FileResolveAction.KEEP_CLOUD -> "已保留云端版本，将重新下载"
+                        FileResolveAction.DELETE_BOTH -> "已删除本地与云端文件"
+                    }
+                )
+            } else {
+                _messages.emit("处理失败：$error")
+            }
+        }
+    }
 
     /** 云端存储统计（「本地目录」右侧「云端」按钮展示用）。 */
     private val _storageStats = MutableStateFlow<StorageStatsUiState?>(null)
     val storageStats: StateFlow<StorageStatsUiState?> = _storageStats.asStateFlow()
 
-    val devices: StateFlow<List<LocalDevice>> = deviceRepository.devices
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
-    /** 只有主设备可以管理空间成员；从设备只能退出空间 */
+    /** 只有主设备可以审批加入申请。 */
     val canManageMembers: StateFlow<Boolean> = deviceRepository.devices
         .map { list -> list.any { it.isThisDevice && it.isPrimary } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
-
-    private val _members = MutableStateFlow<List<SpaceMemberDto>>(emptyList())
-    val members: StateFlow<List<SpaceMemberDto>> = _members.asStateFlow()
 
     /** 主设备看到的待审批加入申请。 */
     private val _joinRequests = MutableStateFlow<List<JoinRequestDto>>(emptyList())
@@ -101,9 +162,6 @@ class SpaceDetailViewModel(
 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
-
-    private val _membershipChanging = MutableStateFlow<String?>(null)
-    val membershipChanging: StateFlow<String?> = _membershipChanging.asStateFlow()
 
     private val _messages = MutableSharedFlow<String>()
     val messages: SharedFlow<String> = _messages.asSharedFlow()
@@ -125,8 +183,9 @@ class SpaceDetailViewModel(
     }
 
     private suspend fun loadRemote() {
+        // 空间详情与目录映射刷新；成员展示已移到空间列表页
         when (val result = spaceRepository.refreshSpace(spaceId)) {
-            is ApiResult.Success -> _members.value = result.data
+            is ApiResult.Success -> Unit
             is ApiResult.Failure -> _messages.emit(result.message)
         }
     }
@@ -179,12 +238,21 @@ class SpaceDetailViewModel(
         }
     }
 
+    /** 立即同步：前台时直接调用 SyncEngine（绕过 WorkManager 的调度延迟），同时排一个后台 Work 兜底。 */
     fun syncNow() {
         viewModelScope.launch {
             syncRepository.requeueFailed(spaceId)
-            scheduleSync()
-            _messages.emit("已加入联网同步队列；冲突文件不会被覆盖")
+            // 前台直接执行，避免 MIUI JobScheduler 加的 TIMING_DELAY（实测可达 7 分钟以上）
+            val result = syncEngine.syncAll()
+            val msg = when (result) {
+                SyncRunResult.SUCCESS -> "同步完成"
+                SyncRunResult.RETRY -> "另外一台设备正在同步，请稍后"
+                SyncRunResult.FAILURE -> "同步失败，请查看任务详情"
+            }
+            _messages.emit(msg)
         }
+        // 兜底：ViewModel 被销毁时 WorkManager 会接管
+        scheduleSync()
     }
 
     /** 重新排队单个任务（待处理/等待重试/失败均可重试）。 */
@@ -196,11 +264,20 @@ class SpaceDetailViewModel(
         }
     }
 
-    /** 取消尚未执行或已失败的任务；运行中的任务由 Worker 自行结束。 */
+    /** 任务卡片取消：进行中的上传/下载移到队列末尾（保留任务），其余未完成任务直接移除。 */
     fun cancelTask(task: LocalSyncTask) {
         viewModelScope.launch {
-            syncRepository.cancelTask(task.id)
-            _messages.emit("已取消：${task.remoteRelativePath.substringAfterLast('/')}")
+            val name = task.remoteRelativePath.substringAfterLast('/')
+            val runningTransfer = task.state == SyncTaskState.RUNNING &&
+                (task.type == SyncTaskType.UPLOAD || task.type == SyncTaskType.DOWNLOAD)
+            if (runningTransfer) {
+                // 进行中的上传/下载不丢弃，移到队列末尾等本轮其他任务完成后再继续
+                syncRepository.moveRunningTaskToQueueEnd(task.id)
+                _messages.emit("已移到队列末尾：$name")
+            } else {
+                syncRepository.cancelTask(task.id)
+                _messages.emit("已取消：$name")
+            }
         }
     }
 
@@ -215,29 +292,6 @@ class SpaceDetailViewModel(
             failed.forEach { syncRepository.retryTask(it.id) }
             scheduleSync()
             _messages.emit("已重新排队 ${failed.size} 个失败任务")
-        }
-    }
-
-    /** 冲突解决：保留本地（覆盖云端）或保留云端（移走本地重新下载）。 */
-    fun resolveConflict(task: LocalSyncTask, keepLocal: Boolean) {
-        if (_resolvingTaskId.value != null) return
-        viewModelScope.launch {
-            _resolvingTaskId.value = task.id
-            val error = if (keepLocal) {
-                syncEngine.resolveConflictKeepLocal(task)
-            } else {
-                syncEngine.resolveConflictKeepCloud(task)
-            }
-            _resolvingTaskId.value = null
-            if (error == null) {
-                _messages.emit(
-                    if (keepLocal) "已选择保留本地版本，正在覆盖云端"
-                    else "已选择保留云端版本，本地文件已移入回收站，将重新下载"
-                )
-                scheduleSync()
-            } else {
-                _messages.emit("处理失败：$error")
-            }
         }
     }
 
@@ -288,35 +342,14 @@ class SpaceDetailViewModel(
     /** 从设备退出空间：移出本机设备。 */
     fun exitSpace() {
         val deviceId = currentDeviceId ?: return
-        setMembership(deviceId, false)
-    }
-
-    fun setMembership(deviceId: String, join: Boolean) {
-        if (_membershipChanging.value != null) return
         viewModelScope.launch {
-            _membershipChanging.value = deviceId
-            val result = if (join) {
-                spaceRepository.addMember(spaceId, deviceId)
-            } else {
-                spaceRepository.removeMember(spaceId, deviceId)
-            }
-            when (result) {
+            when (val result = spaceRepository.removeMember(spaceId, deviceId)) {
                 is ApiResult.Success -> {
-                    val deviceName = devices.value.firstOrNull { it.id == deviceId }?.deviceName
-                    val isSelf = deviceId == currentDeviceId
-                    _messages.emit(
-                        when {
-                            join && isSelf -> "本机已加入空间，请绑定本地目录"
-                            join -> "已将「${deviceName ?: "该设备"}」加入空间，请在该设备上绑定本地目录"
-                            isSelf -> "已退出空间，本机目录绑定已解除；可在「加入空间」中重新加入"
-                            else -> "已将「${deviceName ?: "该设备"}」移出空间，其目录绑定已解除"
-                        }
-                    )
+                    _messages.emit("已退出空间，本机目录绑定已解除")
                     loadRemote()
                 }
                 is ApiResult.Failure -> _messages.emit("成员变更失败：${result.message}")
             }
-            _membershipChanging.value = null
         }
     }
 }

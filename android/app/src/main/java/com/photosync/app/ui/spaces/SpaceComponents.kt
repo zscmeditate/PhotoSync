@@ -5,17 +5,23 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -23,15 +29,22 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SyncProblem
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,14 +60,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.photosync.app.data.local.FileSyncStatus
+import com.photosync.app.data.local.LocalDevice
+import com.photosync.app.data.local.LocalFileIndex
 import com.photosync.app.data.local.LocalSpace
 import com.photosync.app.data.local.MappingStatus
+import com.photosync.app.data.remote.SpaceMemberDto
+import com.photosync.app.data.sync.FileFailureInfo
 import com.photosync.app.ui.components.IconBadge
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 import com.photosync.app.ui.theme.SuccessGreen
 import com.photosync.app.ui.theme.WarningOrange
+import com.photosync.app.util.formatIsoTime
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -94,6 +112,12 @@ fun SpaceCard(
     space: LocalSpace,
     onClick: () -> Unit,
     hasError: Boolean = false,
+    members: List<SpaceMemberDto> = emptyList(),
+    showParticipants: Boolean = true,
+    thisDeviceId: String? = null,
+    canManageMembers: Boolean = false,
+    onManageMembers: (() -> Unit)? = null,
+    onExitSpace: (() -> Unit)? = null,
     onRename: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null
 ) {
@@ -105,82 +129,260 @@ fun SpaceCard(
             .fillMaxWidth()
             .clickable(onClick = onClick)
     ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconBadge(icon = Icons.Filled.Folder, size = 46)
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconBadge(icon = Icons.Filled.Folder, size = 46)
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = space.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        RoleBadge(space.role)
+                    }
                     Text(
-                        text = space.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    RoleBadge(space.role)
-                }
-                Text(
-                    text = "${space.memberCount} 台设备 · ${space.mappingCount} 台已绑定目录",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = OnSurfaceMuted,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-                if (hasError) {
-                    Text(
-                        text = "有目录映射需要处理",
+                        text = "${space.memberCount} 台设备 · ${space.mappingCount} 台已绑定目录",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ErrorRed,
-                        modifier = Modifier.padding(top = 3.dp)
+                        color = OnSurfaceMuted,
+                        modifier = Modifier.padding(top = 4.dp)
                     )
+                    if (hasError) {
+                        Text(
+                            text = "有目录映射需要处理",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ErrorRed,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
+                }
+                if (onRename != null || onDelete != null) {
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "空间操作")
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("进入详情") },
+                                onClick = {
+                                    menuExpanded = false
+                                    onClick()
+                                }
+                            )
+                            if (onRename != null) {
+                                DropdownMenuItem(
+                                    text = { Text("重命名") },
+                                    leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                                    enabled = space.role == "admin" || space.role == "owner",
+                                    onClick = {
+                                        menuExpanded = false
+                                        onRename()
+                                    }
+                                )
+                            }
+                            if (onDelete != null) {
+                                DropdownMenuItem(
+                                    text = { Text("删除整个空间") },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                                    enabled = space.role == "admin",
+                                    onClick = {
+                                        menuExpanded = false
+                                        onDelete()
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
-            if (onRename != null || onDelete != null) {
-                Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "空间操作")
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
+            if (showParticipants) {
+                ParticipantSubCard(
+                    members = members,
+                    memberCount = space.memberCount,
+                    thisDeviceId = thisDeviceId,
+                    canManageMembers = canManageMembers,
+                    onManageMembers = onManageMembers,
+                    onExitSpace = onExitSpace
+                )
+            }
+        }
+    }
+}
+
+/** 空间卡片内的子卡片：本空间的参与设备列表；管理/退出入口按角色显示。 */
+@Composable
+private fun ParticipantSubCard(
+    members: List<SpaceMemberDto>,
+    memberCount: Int,
+    thisDeviceId: String?,
+    canManageMembers: Boolean,
+    onManageMembers: (() -> Unit)?,
+    onExitSpace: (() -> Unit)?
+) {
+    val thisDeviceIsMember = members.any { it.deviceId == thisDeviceId }
+    // 成员明细尚未加载时先用空间自带的设备数，避免显示为 0
+    val shownCount = if (members.isEmpty()) memberCount else members.size
+    val actionText = when {
+        canManageMembers && onManageMembers != null -> "管理"
+        thisDeviceIsMember && onExitSpace != null -> "退出空间"
+        else -> null
+    }
+    val action = when {
+        canManageMembers && onManageMembers != null -> onManageMembers
+        thisDeviceIsMember && onExitSpace != null -> onExitSpace
+        else -> null
+    }
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+    ) {
+        Column(modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "参与设备 $shownCount",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = OnSurfaceMuted,
+                    modifier = Modifier.weight(1f)
+                )
+                if (action != null && actionText != null) {
+                    TextButton(
+                        onClick = action,
+                        modifier = Modifier.height(28.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("进入详情") },
-                            onClick = {
-                                menuExpanded = false
-                                onClick()
-                            }
-                        )
-                        if (onRename != null) {
-                            DropdownMenuItem(
-                                text = { Text("重命名") },
-                                leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
-                                onClick = {
-                                    menuExpanded = false
-                                    onRename()
-                                }
-                            )
-                        }
-                        if (onDelete != null) {
-                            DropdownMenuItem(
-                                text = { Text("删除整个空间") },
-                                leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
-                                enabled = space.role == "admin",
-                                onClick = {
-                                    menuExpanded = false
-                                    onDelete()
-                                }
-                            )
-                        }
+                        Text(actionText, style = MaterialTheme.typography.labelMedium, color = PrimaryBlue)
                     }
+                }
+            }
+            if (members.isEmpty()) {
+                Text(
+                    text = "暂无成员信息",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OnSurfaceMuted,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            } else {
+                members.forEach { member ->
+                    MemberSubRow(member = member, thisDeviceId = thisDeviceId)
                 }
             }
         }
     }
+}
+
+/** 子卡片内单台参与设备：名称 + 角色 + 在线状态，单行紧凑展示。 */
+@Composable
+private fun MemberSubRow(member: SpaceMemberDto, thisDeviceId: String?) {
+    // 本机正在运行 App 即为在线，不依赖服务端心跳时间
+    val online = member.online || member.deviceId == thisDeviceId
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Filled.Smartphone,
+            contentDescription = null,
+            tint = PrimaryBlue,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = member.deviceName + if (member.deviceId == thisDeviceId) "（本机）" else "",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = memberRoleLabel(member.role),
+            style = MaterialTheme.typography.bodySmall,
+            color = OnSurfaceMuted
+        )
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            imageVector = if (online) Icons.Filled.CheckCircle else Icons.Filled.CloudOff,
+            contentDescription = null,
+            tint = if (online) SuccessGreen else OnSurfaceMuted,
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(Modifier.width(3.dp))
+        Text(
+            text = if (online) "在线" else "离线",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (online) SuccessGreen else OnSurfaceMuted
+        )
+    }
+}
+
+/** 参与设备管理弹层：勾选本账号下的设备加入/移出空间。 */
+@Composable
+fun MemberManageDialog(
+    devices: List<LocalDevice>,
+    members: List<SpaceMemberDto>,
+    changingDeviceId: String?,
+    onCheckedChange: (String, Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("管理参与设备") },
+        text = {
+            Column {
+                Text("勾选本账号下要加入空间的设备；取消勾选会将设备移出空间。", color = OnSurfaceMuted)
+                Spacer(Modifier.height(12.dp))
+                if (devices.isEmpty()) {
+                    Text("设备列表为空，请先在设备管理页刷新或注册设备")
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 380.dp)) {
+                        items(devices, key = { it.id }) { device ->
+                            val joined = members.any { it.deviceId == device.id }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = joined,
+                                    onCheckedChange = { onCheckedChange(device.id, it) },
+                                    enabled = changingDeviceId == null
+                                )
+                                Column {
+                                    Text(device.deviceName + if (device.isThisDevice) "（本机）" else "")
+                                    Text(
+                                        if (changingDeviceId == device.id) "正在更新…" else device.platform,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurfaceMuted
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } }
+    )
+}
+
+private fun memberRoleLabel(role: String): String = when (role) {
+    "owner" -> "所有者"
+    "admin" -> "管理员"
+    "member" -> "成员"
+    "viewer" -> "只读"
+    else -> role
 }
 
 @Composable
@@ -258,4 +460,179 @@ fun formatFileSize(size: Long): String {
 fun formatModifiedAt(timestamp: Long): String {
     if (timestamp <= 0L) return "修改时间未知"
     return DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timestamp))
+}
+
+/** 失败详情弹层的 UI 状态（本地目录页与空间详情任务列表共用）。 */
+data class FailureDetailUi(
+    val file: LocalFileIndex,
+    val loading: Boolean,
+    val info: FileFailureInfo? = null
+)
+
+/** 同步失败详情弹层：云端/本地文件信息 + 本地优先/云端优先/全部删除/重试 操作行；任务场景可附加右上角取消。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FailureDetailSheet(
+    detail: FailureDetailUi,
+    busy: Boolean,
+    onKeepLocal: () -> Unit,
+    onKeepCloud: () -> Unit,
+    onDeleteBoth: () -> Unit,
+    onDismiss: () -> Unit,
+    canResolve: Boolean = true,
+    onRetry: (() -> Unit)? = null,
+    onCancelTask: (() -> Unit)? = null
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = detail.file.fileName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = detail.file.relativePath,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnSurfaceMuted,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                if (onCancelTask != null) {
+                    TextButton(
+                        onClick = onCancelTask,
+                        enabled = !busy
+                    ) {
+                        Text("取消任务")
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            if (detail.loading) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 20.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                }
+            } else {
+                val info = detail.info
+                DetailInfoRow(
+                    label = "云端文件",
+                    value = when {
+                        info?.cloud != null -> {
+                            val created = info.cloud.createdAtIso?.let { " · ${formatIsoTime(it)}" } ?: ""
+                            "${formatFileSize(info.cloud.size)} · 版本 v${info.cloud.version}$created"
+                        }
+                        info?.cloudError != null -> "加载失败：${info.cloudError}"
+                        else -> "云端暂无文件"
+                    }
+                )
+                DetailInfoRow(
+                    label = "本地文件",
+                    value = if (info?.localSize != null) {
+                        "${formatFileSize(info.localSize)} · ${formatModifiedAt(info.localModifiedAt ?: 0L)}"
+                    } else {
+                        "本地文件不存在"
+                    }
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = onKeepLocal,
+                        enabled = !busy && canResolve,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) {
+                        Text(
+                            text = "本地优先",
+                            color = if (canResolve) PrimaryBlue else OnSurfaceMuted,
+                            maxLines = 1
+                        )
+                    }
+                    TextButton(
+                        onClick = onKeepCloud,
+                        enabled = !busy && info?.cloud != null && canResolve,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) {
+                        Text(
+                            text = "云端优先",
+                            color = if (info?.cloud != null && canResolve) PrimaryBlue else OnSurfaceMuted,
+                            maxLines = 1
+                        )
+                    }
+                    TextButton(
+                        onClick = onDeleteBoth,
+                        enabled = !busy && canResolve,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) {
+                        Text(
+                            text = "全部删除",
+                            color = if (canResolve) ErrorRed else OnSurfaceMuted,
+                            maxLines = 1
+                        )
+                    }
+                    if (onRetry != null) {
+                        TextButton(
+                            onClick = onRetry,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Text(text = "重试", color = PrimaryBlue, maxLines = 1)
+                        }
+                    }
+                    if (busy) {
+                        Spacer(Modifier.width(8.dp))
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    }
+                }
+                Text(
+                    text = "本地＝以本地内容覆盖/上传云端；云端＝移走本地文件后重新下载云端；删除＝两端都删除。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OnSurfaceMuted,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = OnSurfaceMuted,
+            modifier = Modifier.width(72.dp)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f)
+        )
+    }
 }

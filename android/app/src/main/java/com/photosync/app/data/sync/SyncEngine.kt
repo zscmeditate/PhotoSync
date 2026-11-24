@@ -25,24 +25,14 @@ import com.photosync.app.data.repository.SyncRepository
 import com.photosync.app.data.remote.SyncLockRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
 import java.io.IOException
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** 一次同步运行的结果；RETRY 由 WorkManager 按退避策略再次执行。 */
 enum class SyncRunResult { SUCCESS, RETRY, FAILURE }
-
-/**
- * 一轮同步持有的账号级同步权租约：服务端同一账号同一时刻只发放给一台设备，
- * 心跳发现锁被其他设备抢走后置 lost，各任务边界处检查并中断本轮同步（改为等待重试）。
- */
-class SyncLease {
-    val lost = AtomicBoolean(false)
-}
 
 /** 仅实现 Phase 3 的新增上传与 file_created 增量下载。 */
 class SyncEngine(
@@ -52,87 +42,32 @@ class SyncEngine(
     private val api = repository.apiClient.api
 
     /**
-     * 全量同步入口：先抢账号级同步权（同一账号同时只允许一台设备上传/下载），
-     * 抢不到时整轮 RETRY 等待；同步期间心跳续期，锁丢失即中断让位。
+     * 全量同步入口：各设备以文件为颗粒度并行同步。
+     * 远端版本号天然保证顺序：并发上传/下载同一路径时，只有版本匹配的设备能成功；
+     * 真正的写冲突（两边同时修改）会在 Phase 5 以路径冲突形式暴露给用户解决。
      */
     suspend fun syncAll(): SyncRunResult {
-        val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
-        val lease = SyncLease()
-        when (val lock = apiCall { api.acquireSyncLock(SyncLockRequest(deviceId)) }) {
-            is ApiResult.Failure -> return if (lock.isNetwork) {
-                SyncRunResult.RETRY
-            } else {
-                // 老版本服务端没有同步锁接口（404）时不阻断同步，退化为并发同步。
-                if (lock.code == "NOT_FOUND") unlockedSyncAll() else SyncRunResult.FAILURE
-            }
-            is ApiResult.Success -> if (!lock.data.acquired) {
-                // 其他设备持有同步权：本轮等待，由 WorkManager 退避后重新抢锁。
-                return SyncRunResult.RETRY
-            }
-        }
-        try {
-            return coroutineScope {
-                val heartbeat = launch { heartbeatLoop(deviceId, lease) }
-                try {
-                    var result = SyncRunResult.SUCCESS
-                    for (spaceId in repository.spaceIds()) {
-                        if (lease.lost.get()) {
-                            result = SyncRunResult.RETRY
-                            break
-                        }
-                        when (syncSpace(spaceId, lease)) {
-                            SyncRunResult.SUCCESS -> Unit
-                            SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) {
-                                result = SyncRunResult.RETRY
-                            }
-                            SyncRunResult.FAILURE -> result = SyncRunResult.FAILURE
-                        }
-                    }
-                    result
-                } finally {
-                    heartbeat.cancel()
-                }
-            }
-        } finally {
-            // 释放同步权；即使锁已被抢走或过期，服务端也会安全忽略。
-            apiCall { api.releaseSyncLock(SyncLockRequest(deviceId)) }
-        }
-    }
-
-    /** 服务端不支持同步锁时的兼容路径：不加锁直接同步各空间。 */
-    private suspend fun unlockedSyncAll(): SyncRunResult {
+        // 不加全局锁，各设备以文件为颗粒度并行同步。
+        // 远端文件是幂等的：不同设备不会同时上传同一路径（上传前会校验远端是否已变更），
+        // 同一文件的下载/上传也不会互相覆盖——写冲突在路径冲突处理里解决。
         var result = SyncRunResult.SUCCESS
         for (spaceId in repository.spaceIds()) {
-            when (syncSpace(spaceId, null)) {
+            when (syncSpace(spaceId)) {
                 SyncRunResult.SUCCESS -> Unit
-                SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) {
-                    result = SyncRunResult.RETRY
-                }
+                SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) result = SyncRunResult.RETRY
                 SyncRunResult.FAILURE -> result = SyncRunResult.FAILURE
             }
         }
         return result
     }
 
-    /** 同步期间每 25 秒心跳续期；服务端明确返回未持锁（被抢走/过期）时标记丢失。 */
-    private suspend fun heartbeatLoop(deviceId: String, lease: SyncLease) {
-        while (currentCoroutineContext().isActive && !lease.lost.get()) {
-            delay(LOCK_HEARTBEAT_INTERVAL_MS)
-            when (val result = apiCall { api.heartbeatSyncLock(SyncLockRequest(deviceId)) }) {
-                is ApiResult.Success -> if (!result.data.acquired) lease.lost.set(true)
-                // 网络抖动不视为丢失：锁 TTL 由服务端兜底，任务本身失败也会自然中断同步。
-                is ApiResult.Failure -> Unit
-            }
-        }
-    }
-
-    suspend fun syncSpace(spaceId: String, lease: SyncLease?): SyncRunResult {
+    suspend fun syncSpace(spaceId: String): SyncRunResult {
         val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
         repository.recoverRunning(spaceId)
+        repository.recoverScanning(spaceId)
         val mappings = repository.activeMappings(spaceId, deviceId)
         try {
             for (mapping in mappings) {
-                if (lease?.lost?.get() == true) return SyncRunResult.RETRY
                 val oldIndex = repository.files(mapping.id)
                 when (val scan = repository.scanMapping(mapping.id)) {
                     is ApiResult.Failure -> return SyncRunResult.FAILURE
@@ -143,7 +78,8 @@ class SyncEngine(
                 // 并以关联后的索引作为差异基线，避免把相同文件重复规划为上传。
                 var baseline = oldIndex
                 var current = newIndex
-                if (oldIndex.isEmpty() && newIndex.isNotEmpty()) {
+                val freshlyBound = oldIndex.isEmpty() && newIndex.isNotEmpty()
+                if (freshlyBound) {
                     when (reconcileFreshMapping(mapping, newIndex)) {
                         SyncRunResult.RETRY -> return SyncRunResult.RETRY
                         else -> Unit
@@ -154,6 +90,14 @@ class SyncEngine(
                     }
                 }
                 repository.planAndEnqueueLocalChanges(spaceId, mapping, baseline, current)
+                // 兜底补齐：云端存在、本地索引缺失且没有未完成任务的文件，补建下载任务。
+                // 用于修复历史「云端优先」未生成下载任务造成的本地缺失（新建空目录不自动拉全量）。
+                if (!freshlyBound && current.isNotEmpty()) {
+                    when (reconcileMissingDownloads(mapping, current.map { it.relativePath }.toSet())) {
+                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                        else -> Unit
+                    }
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -162,8 +106,16 @@ class SyncEngine(
         }
 
         var taskFailed = false
+        // 失败处理「云端优先」补建的独立下载任务没有对应远端事件，需在此主动执行。
         while (true) {
-            if (lease?.lost?.get() == true) return SyncRunResult.RETRY
+            val task = repository.nextStandaloneDownload(spaceId) ?: break
+            when (downloadStandaloneTask(spaceId, deviceId, task)) {
+                SyncRunResult.SUCCESS -> Unit
+                SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                SyncRunResult.FAILURE -> taskFailed = true
+            }
+        }
+        while (true) {
             val task = repository.nextPendingUpload(spaceId) ?: break
             when (upload(task)) {
                 SyncRunResult.SUCCESS -> Unit
@@ -172,7 +124,6 @@ class SyncEngine(
             }
         }
         while (true) {
-            if (lease?.lost?.get() == true) return SyncRunResult.RETRY
             val task = repository.nextPendingMutation(spaceId) ?: break
             when (commitMutation(task)) {
                 SyncRunResult.SUCCESS -> Unit
@@ -181,7 +132,7 @@ class SyncEngine(
             }
         }
         // 单个任务失败不应阻断本轮的远端变更拉取：先拉取，再在末尾汇报失败。
-        val pulled = pullChanges(spaceId, deviceId, mappings, lease)
+        val pulled = pullChanges(spaceId, deviceId, mappings)
         return when {
             pulled != SyncRunResult.SUCCESS -> pulled
             taskFailed -> SyncRunResult.FAILURE
@@ -229,6 +180,64 @@ class SyncEngine(
                 SyncRunResult.SUCCESS
             }
         }
+    }
+
+    /**
+     * 兜底补齐：云端存在、但本地索引缺失、且没有未完成任务的文件，补建独立下载任务。
+     * 只依赖远端清单即可发现这类文件（正常情况由事件驱动下载覆盖）。
+     */
+    private suspend fun reconcileMissingDownloads(
+        mapping: LocalFolderMapping,
+        localPaths: Set<String>
+    ): SyncRunResult {
+        val remote = when (
+            val result = apiCall {
+                api.scanManifest(
+                    mapping.spaceId,
+                    ScanManifestRequest(
+                        deviceId = mapping.deviceId,
+                        mappingId = mapping.id,
+                        scanComplete = true,
+                        files = emptyList()
+                    )
+                )
+            }
+        ) {
+            is ApiResult.Failure -> return if (result.isNetwork) SyncRunResult.RETRY else SyncRunResult.SUCCESS
+            is ApiResult.Success -> result.data.remoteFiles
+        }
+        if (remote.isEmpty()) return SyncRunResult.SUCCESS
+        val activePaths = repository.activeRemotePaths(mapping.spaceId).toHashSet()
+        for (file in remote) {
+            if (file.relativePath in localPaths || file.relativePath in activePaths) continue
+            // 补齐下载需要 objectId：按路径取当前生效版本
+            val current = when (
+                val result = apiCall { api.getFileByPath(mapping.spaceId, mapping.deviceId, file.relativePath) }
+            ) {
+                is ApiResult.Failure -> return if (result.isNetwork) SyncRunResult.RETRY else SyncRunResult.SUCCESS
+                is ApiResult.Success -> result.data.file ?: continue
+            }
+            if (current.objectId.isBlank() || current.sha256.isBlank()) continue
+            repository.enqueueFileDownloadTask(
+                spaceId = mapping.spaceId,
+                mappingId = mapping.id,
+                localPath = file.relativePath,
+                fileId = file.fileId,
+                objectId = current.objectId,
+                size = current.size.toLongOrNull() ?: file.size,
+                sha256 = current.sha256
+            )
+        }
+        return SyncRunResult.SUCCESS
+    }
+
+    /**
+     * 传输进度边界检查：任务行被删除（取消）或状态不再是 RUNNING（移到队列末尾）时中断当前任务。
+     * 使用独立异常，避免把用户操作误当作协程取消而终止整轮同步。
+     */
+    private suspend fun ensureTaskRunning(taskId: String) {
+        val row = repository.getTask(taskId) ?: throw TaskAbortedException()
+        if (row.state != SyncTaskState.RUNNING) throw TaskAbortedException()
     }
 
     private suspend fun upload(task: LocalSyncTask): SyncRunResult {
@@ -293,6 +302,8 @@ class SyncEngine(
 
             val uploaded = session.parts.map { it.partNumber }.toMutableSet()
             for (partNumber in 1..session.partCount) {
+                // 任务被取消（行已删除）或被移到队列末尾（状态不再是 RUNNING）：中断当前传输
+                ensureTaskRunning(current.id)
                 if (partNumber in uploaded) continue
                 val length = expectedPartSize(session.size, session.partSize, partNumber)
                 val offset = (partNumber - 1).toLong() * session.partSize
@@ -395,6 +406,9 @@ class SyncEngine(
                     remoteVersion = remote.version
                 )
             )
+            return SyncRunResult.SUCCESS
+        } catch (e: TaskAbortedException) {
+            // 用户取消或移到队列末尾：任务行已被删除或重置为 PENDING，本次不再写入状态
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
             throw e
@@ -500,8 +514,7 @@ class SyncEngine(
     private suspend fun pullChanges(
         spaceId: String,
         deviceId: String,
-        mappings: List<com.photosync.app.data.local.LocalFolderMapping>,
-        lease: SyncLease?
+        mappings: List<com.photosync.app.data.local.LocalFolderMapping>
     ): SyncRunResult {
         var since = repository.cursor(spaceId, deviceId)?.lastAppliedRevision ?: "0"
         try {
@@ -568,7 +581,6 @@ class SyncEngine(
 
             // 阶段二：先为所有对象事件预建持久化下载任务（不执行），
             // 任务中心因此能完整列出待下载清单与剩余数量。
-            if (lease?.lost?.get() == true) return SyncRunResult.RETRY
             for (event in events) {
                 val payload = event.payload ?: continue
                 if (event.type in OBJECT_EVENT_TYPES) {
@@ -578,7 +590,6 @@ class SyncEngine(
 
             // 阶段三：逐个处理并确认；游标随确认推进，失败时保持不动（下次重拉重试）。
             for (event in events) {
-                if (lease?.lost?.get() == true) return SyncRunResult.RETRY
                 val revision = DecimalContract.revision(event.revision)
                 when (processEvent(spaceId, deviceId, rules, event)) {
                     SyncRunResult.SUCCESS -> Unit
@@ -828,6 +839,8 @@ class SyncEngine(
                     expectedSize = expectedSize,
                     expectedSha256 = expectedSha256,
                     onProgress = { transferred ->
+                        // 任务被取消或被移到队列末尾：中断当前下载
+                        ensureTaskRunning(task.id)
                         repository.updateDownloadProgress(task.id, transferred)
                     }
                 )
@@ -839,6 +852,9 @@ class SyncEngine(
                 return downloadRequestFailure(task, e.failure)
             }
             return SyncRunResult.SUCCESS
+        } catch (e: TaskAbortedException) {
+            // 下载被取消/移到队列末尾：事件不确认，下次同步会重新拉取并在队列末尾重试
+            return SyncRunResult.FAILURE
         } catch (e: CancellationException) {
             throw e
         } catch (e: LocalPathConflictException) {
@@ -864,6 +880,131 @@ class SyncEngine(
             return failEventTask(spaceId, event.revision, "SYNC_CONTRACT_INVALID", e.message ?: "同步数据无效")
         } catch (e: Exception) {
             return failEventTask(spaceId, event.revision, "SYNC_ERROR", e.message ?: "下载失败")
+        }
+    }
+
+    /**
+     * 执行不依赖远端事件的独立下载任务（失败处理「云端优先」补建）。
+     * 目标已存在且内容一致时只补索引；内容不一致时标记冲突，交给用户处理。
+     */
+    private suspend fun downloadStandaloneTask(
+        spaceId: String,
+        deviceId: String,
+        task: LocalSyncTask
+    ): SyncRunResult {
+        val mapping = repository.mapping(task.mappingId)
+        if (mapping == null || mapping.spaceId != spaceId) {
+            repository.markTaskFailed(task, "MAPPING_NOT_FOUND", "本地目录映射已不存在，请重新绑定")
+            return SyncRunResult.FAILURE
+        }
+        if (mapping.status != MappingStatus.ACTIVE) {
+            // 目录正在扫描或暂时不可用（例如另一轮同步正在扫描）：保留任务，下次同步继续，不判失败
+            repository.markTaskRetry(task, "MAPPING_BUSY", "本地目录正在扫描或暂不可用，稍后自动重试")
+            return SyncRunResult.SUCCESS
+        }
+        var current = repository.markTaskRunning(task)
+        val objectId = current.objectId
+        val fileId = current.fileId
+        val expectedSha256 = current.sha256
+        if (objectId.isNullOrBlank() || fileId.isNullOrBlank() || expectedSha256.isNullOrBlank()) {
+            repository.markTaskFailed(current, "SYNC_CONTRACT_INVALID", "下载任务缺少云端对象信息，无法执行")
+            return SyncRunResult.FAILURE
+        }
+        val target = fileStore.findTarget(mapping, current.localRelativePath)
+        if (target != null && target.isFile && target.canRead()) {
+            val digest = fileStore.digest(target)
+            if (digest.size == current.size && digest.sha256.equals(expectedSha256, true)) {
+                repository.markSynced(
+                    current,
+                    LocalFileIndex(
+                        id = 0,
+                        mappingId = mapping.id,
+                        relativePath = current.localRelativePath,
+                        fileName = target.name ?: current.localRelativePath.substringAfterLast('/'),
+                        size = digest.size,
+                        modifiedAt = target.lastModified(),
+                        sha256 = digest.sha256,
+                        docUri = target.uri.toString(),
+                        status = FileSyncStatus.SYNCED,
+                        lastScannedAt = System.currentTimeMillis(),
+                        remoteFileId = fileId,
+                        remoteVersion = current.baseVersion
+                    )
+                )
+                return SyncRunResult.SUCCESS
+            }
+            val conflict = LocalFileIndex(
+                id = 0,
+                mappingId = mapping.id,
+                relativePath = current.localRelativePath,
+                fileName = target.name ?: current.localRelativePath.substringAfterLast('/'),
+                size = digest.size,
+                modifiedAt = target.lastModified(),
+                sha256 = digest.sha256,
+                docUri = target.uri.toString(),
+                status = FileSyncStatus.CONFLICT,
+                lastScannedAt = System.currentTimeMillis(),
+                remoteFileId = fileId,
+                remoteVersion = current.baseVersion
+            )
+            return failDownload(current, "LOCAL_PATH_CONFLICT", "本地已有不同内容，未覆盖远端或本地文件", conflict)
+        }
+        try {
+            val downloaded = fileStore.downloadVerified(
+                mapping = mapping,
+                localRelativePath = current.localRelativePath,
+                taskId = current.id,
+                fetch = { rangeStart -> downloadChunk(objectId, deviceId, rangeStart) },
+                expectedSize = current.size,
+                expectedSha256 = expectedSha256,
+                onProgress = { transferred ->
+                    // 任务被取消或被移到队列末尾：中断当前下载
+                    ensureTaskRunning(current.id)
+                    repository.updateDownloadProgress(current.id, transferred)
+                }
+            )
+            repository.markSynced(
+                current,
+                LocalFileIndex(
+                    id = 0,
+                    mappingId = mapping.id,
+                    relativePath = current.localRelativePath,
+                    fileName = downloaded.name ?: current.localRelativePath.substringAfterLast('/'),
+                    size = downloaded.length(),
+                    modifiedAt = downloaded.lastModified(),
+                    sha256 = expectedSha256,
+                    docUri = downloaded.uri.toString(),
+                    status = FileSyncStatus.SYNCED,
+                    lastScannedAt = System.currentTimeMillis(),
+                    remoteFileId = fileId,
+                    remoteVersion = current.baseVersion
+                )
+            )
+            return SyncRunResult.SUCCESS
+        } catch (e: TaskAbortedException) {
+            // 队列末尾：任务行已重置为 PENDING，下一轮（或本轮其他任务之后）继续
+            return SyncRunResult.SUCCESS
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: DownloadRequestFailureException) {
+            return downloadRequestFailure(current, e.failure)
+        } catch (e: LocalPathConflictException) {
+            repository.markTaskFailed(current, "LOCAL_PATH_CONFLICT", e.message ?: "本地路径冲突")
+            return SyncRunResult.FAILURE
+        } catch (e: IOException) {
+            return if (e !is SafFileException) {
+                repository.markTaskRetry(current, "NETWORK_ERROR", e.message ?: "下载中断")
+                SyncRunResult.RETRY
+            } else {
+                repository.markTaskFailed(current, "LOCAL_FILE_ERROR", e.message ?: "本地文件失败")
+                SyncRunResult.FAILURE
+            }
+        } catch (e: ContentVerificationException) {
+            repository.markTaskFailed(current, "CONTENT_VERIFICATION", e.message ?: "下载校验失败")
+            return SyncRunResult.FAILURE
+        } catch (e: Exception) {
+            repository.markTaskFailed(current, "SYNC_ERROR", e.message ?: "下载失败")
+            return SyncRunResult.FAILURE
         }
     }
 
@@ -1188,6 +1329,7 @@ class SyncEngine(
                                 status = FileSyncStatus.PENDING_UPLOAD,
                                 size = digest.size,
                                 sha256 = digest.sha256,
+                                docUri = file.docUri.ifBlank { target.uri.toString() },
                                 remoteFileId = occupantFileId,
                                 remoteVersion = occupant.version
                             )
@@ -1210,7 +1352,8 @@ class SyncEngine(
                         file.copy(
                             status = FileSyncStatus.PENDING_UPLOAD,
                             size = digest.size,
-                            sha256 = digest.sha256
+                            sha256 = digest.sha256,
+                            docUri = file.docUri.ifBlank { target.uri.toString() }
                         )
                     )
                     repository.enqueueFileUploadNew(
@@ -1230,11 +1373,13 @@ class SyncEngine(
             val current = versions.versions.firstOrNull() ?: return "云端文件已不存在，无法覆盖"
             if (current.version <= 0) return "云端版本信息无效"
             repository.transaction {
+                repository.removeActiveTasksForPath(mapping.spaceId, mapping.id, file.relativePath)
                 repository.upsertIndex(
                     file.copy(
                         status = FileSyncStatus.PENDING_UPLOAD,
                         size = digest.size,
                         sha256 = digest.sha256,
+                        docUri = file.docUri.ifBlank { target.uri.toString() },
                         remoteFileId = fileId,
                         remoteVersion = current.version
                     )
@@ -1292,6 +1437,7 @@ class SyncEngine(
                 }
             }
             repository.transaction {
+                repository.removeActiveTasksForPath(mapping.spaceId, mapping.id, file.relativePath)
                 repository.deleteIndex(file.mappingId, file.relativePath)
                 repository.enqueueFileDownloadTask(
                     spaceId = mapping.spaceId,
@@ -1324,8 +1470,17 @@ class SyncEngine(
                     return "本地文件无法移入回收站"
                 }
             }
-            val fileId = file.remoteFileId
             val deviceId = repository.currentDeviceId()
+            var fileId = file.remoteFileId
+            if (fileId == null && deviceId != null) {
+                // 任务代表行（从未上传成功）没有云端 ID：按路径查询占用者，确保两端都删
+                fileId = when (
+                    val result = apiCall { api.getFileByPath(mapping.spaceId, deviceId, file.relativePath) }
+                ) {
+                    is ApiResult.Success -> result.data.file?.fileId
+                    is ApiResult.Failure -> null
+                }
+            }
             val current = if (fileId != null && deviceId != null) {
                 when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
                     is ApiResult.Failure -> null
@@ -1335,6 +1490,7 @@ class SyncEngine(
                 null
             }
             repository.transaction {
+                repository.removeActiveTasksForPath(mapping.spaceId, mapping.id, file.relativePath)
                 repository.deleteIndex(file.mappingId, file.relativePath)
                 // 云端无对应文件时仅清理本地
                 if (current != null && current.version > 0) {
@@ -1353,6 +1509,28 @@ class SyncEngine(
         } catch (e: Exception) {
             e.message ?: "处理失败"
         }
+    }
+
+    /**
+     * 任务列表失败详情与处理共用的索引行：优先真实索引；
+     * 从未落索引（如下载中途失败）时以任务元数据构造代表行，docUri 留空由处理流程回填。
+     */
+    suspend fun taskFailureIndex(task: LocalSyncTask): LocalFileIndex {
+        return repository.file(task.mappingId, task.localRelativePath)
+            ?: LocalFileIndex(
+                id = 0,
+                mappingId = task.mappingId,
+                relativePath = task.localRelativePath,
+                fileName = task.localRelativePath.substringAfterLast('/'),
+                size = task.size,
+                modifiedAt = 0L,
+                sha256 = null,
+                docUri = "",
+                status = FileSyncStatus.SYNC_ERROR,
+                lastScannedAt = 0L,
+                remoteFileId = task.fileId,
+                remoteVersion = null
+            )
     }
 
     /** 失败详情弹层的数据：云端最新版本信息 + 本地文件实际状态。 */
@@ -1578,7 +1756,6 @@ class SyncEngine(
         const val OBJECT_NOT_FOUND = "OBJECT_NOT_FOUND"
 
         /** 同步权心跳间隔：小于服务端 SYNC_LOCK_TTL_MS（默认 90s），保证持续续期 */
-        const val LOCK_HEARTBEAT_INTERVAL_MS = 25_000L
 
         /** 需要下载对象的远端事件类型（file_restored 与新建/修改一样需要下载）。 */
         val OBJECT_EVENT_TYPES = setOf("file_created", "file_updated", "file_restored")
@@ -1599,6 +1776,9 @@ data class FileFailureInfo(
     val localSize: Long?,
     val localModifiedAt: Long?
 )
+
+/** 当前任务被用户取消/移到队列末尾，只中断该任务，不影响整轮同步。 */
+private class TaskAbortedException : RuntimeException()
 
 /** 下载请求失败：在 fetch 回调内包装 ApiResult.Failure 传播到调用点，统一走 downloadRequestFailure 处理。 */
 private class DownloadRequestFailureException(val failure: ApiResult.Failure) : RuntimeException(failure.message)

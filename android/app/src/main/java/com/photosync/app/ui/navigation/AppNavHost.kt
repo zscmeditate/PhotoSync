@@ -123,7 +123,8 @@ fun AppRoot(navController: NavHostController = rememberNavController()) {
                 onEditSpace = { navController.navigate(Screen.SpaceEdit(it).route) },
                 onAddMapping = { navController.navigate(Screen.AddMapping(it).route) },
                 onOpenMapping = { navController.navigate(Screen.MappingFiles(it).route) },
-                onOpenTrash = { navController.navigate(Screen.SpaceTrash(it).route) }
+                onOpenTrash = { navController.navigate(Screen.SpaceTrash(it).route) },
+                onOpenActivityLog = { navController.navigate(Screen.ActivityLog(it).route) }
             )
         }
 
@@ -160,8 +161,11 @@ fun AppRoot(navController: NavHostController = rememberNavController()) {
             )
         }
 
-        composable(Screen.ActivityLog.route) {
-            ActivityScreen(onBack = { navController.popBackStack() })
+        composable(Screen.ActivityLog.ROUTE) { entry ->
+            ActivityScreen(
+                spaceId = entry.arguments?.getString("spaceId"),
+                onBack = { navController.popBackStack() }
+            )
         }
 
         composable(Screen.SpaceTrash.ROUTE) { entry ->

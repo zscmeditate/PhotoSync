@@ -14,30 +14,29 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -59,6 +58,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -68,14 +69,11 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
-import com.photosync.app.data.local.LocalDevice
 import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.local.LocalSyncTask
 import com.photosync.app.data.local.SyncTaskState
 import com.photosync.app.data.remote.JoinRequestDto
-import com.photosync.app.data.remote.SpaceMemberDto
 import com.photosync.app.data.sync.SyncScheduler
-import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SectionHeader
@@ -83,7 +81,6 @@ import com.photosync.app.ui.tasks.TaskPresentation
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
-import com.photosync.app.ui.theme.SuccessGreen
 import com.photosync.app.util.formatIsoTime
 
 @Composable
@@ -93,7 +90,8 @@ fun SpaceDetailScreen(
     onEditSpace: (String) -> Unit,
     onAddMapping: (String) -> Unit,
     onOpenMapping: (String) -> Unit,
-    onOpenTrash: (String) -> Unit
+    onOpenTrash: (String) -> Unit,
+    onOpenActivityLog: (String) -> Unit
 ) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val context = LocalContext.current
@@ -112,26 +110,52 @@ fun SpaceDetailScreen(
     val mappings by viewModel.mappings.collectAsStateWithLifecycle()
     val bindingPending by viewModel.bindingPending.collectAsStateWithLifecycle()
     val fileCounts by viewModel.fileCounts.collectAsStateWithLifecycle()
-    val members by viewModel.members.collectAsStateWithLifecycle()
     val joinRequests by viewModel.joinRequests.collectAsStateWithLifecycle()
     val resolvingRequestId by viewModel.resolvingRequestId.collectAsStateWithLifecycle()
-    val devices by viewModel.devices.collectAsStateWithLifecycle()
     val loading by viewModel.loading.collectAsStateWithLifecycle()
-    val membershipChanging by viewModel.membershipChanging.collectAsStateWithLifecycle()
     val syncStats by viewModel.syncStats.collectAsStateWithLifecycle()
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
-    val conflictLocalSizes by viewModel.conflictLocalSizes.collectAsStateWithLifecycle()
+    val taskFailureDetail by viewModel.taskFailureDetail.collectAsStateWithLifecycle()
+    val detailTask by viewModel.detailTask.collectAsStateWithLifecycle()
     val resolvingTaskId by viewModel.resolvingTaskId.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var changeTarget by remember { mutableStateOf<LocalFolderMapping?>(null) }
-    var manageMembers by rememberSaveable { mutableStateOf(false) }
-    var exitConfirm by rememberSaveable { mutableStateOf(false) }
-    // 冲突保留选择：task to keepLocal，确认后才执行
-    var conflictChoice by remember { mutableStateOf<Pair<LocalSyncTask, Boolean>?>(null) }
     var showStorage by rememberSaveable { mutableStateOf(false) }
-    val thisDeviceIsMember = members.any { it.deviceId == viewModel.currentDeviceId }
+    // 任务筛选：null = 全部；再点一次已选中的筛选可取消
+    var taskFilter by rememberSaveable { mutableStateOf<TaskFilter?>(null) }
+
+    val filteredTasks = remember(tasks, taskFilter) {
+        tasks
+            .filter { task ->
+                when (taskFilter) {
+                    null -> true
+                    TaskFilter.RUNNING -> task.state == SyncTaskState.PENDING ||
+                        task.state == SyncTaskState.RUNNING || task.state == SyncTaskState.RETRY
+                    TaskFilter.SUCCESS -> task.state == SyncTaskState.COMPLETED
+                    TaskFilter.FAILED -> task.state == SyncTaskState.FAILED
+                }
+            }
+            .sortedWith(
+                compareBy<LocalSyncTask> { task ->
+                    when (task.state) {
+                        SyncTaskState.RUNNING -> 0
+                        SyncTaskState.RETRY -> 1
+                        SyncTaskState.PENDING -> 2
+                        SyncTaskState.FAILED -> 3
+                        else -> 4
+                    }
+                }.thenByDescending { it.updatedAt }
+            )
+    }
+    val runningCount = remember(tasks) {
+        tasks.count {
+            it.state == SyncTaskState.PENDING || it.state == SyncTaskState.RUNNING || it.state == SyncTaskState.RETRY
+        }
+    }
+    val successCount = remember(tasks) { tasks.count { it.state == SyncTaskState.COMPLETED } }
+    val failedCount = remember(tasks) { tasks.count { it.state == SyncTaskState.FAILED } }
 
     val directoryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -173,8 +197,11 @@ fun SpaceDetailScreen(
                             Icon(Icons.Filled.Refresh, contentDescription = "刷新空间")
                         }
                     }
-                    IconButton(onClick = { onEditSpace(spaceId) }) {
-                        Icon(Icons.Filled.Edit, contentDescription = "编辑空间")
+                    // 只有管理员（owner/admin；本账号主设备自动具备管理员角色）才可以重命名空间
+                    if (space?.role == "admin" || space?.role == "owner") {
+                        IconButton(onClick = { onEditSpace(spaceId) }) {
+                            Icon(Icons.Filled.Edit, contentDescription = "编辑空间")
+                        }
                     }
                 }
             )
@@ -259,32 +286,26 @@ fun SpaceDetailScreen(
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = "本地目录",
-                                style = MaterialTheme.typography.titleMedium,
-                                modifier = Modifier.weight(1f)
-                            )
-                            // 右侧两个图标入口：回收站（左）、云端存储（右）
-                            IconButton(onClick = { onOpenTrash(spaceId) }) {
-                                Icon(
-                                    imageVector = Icons.Filled.Delete,
-                                    contentDescription = "回收站",
-                                    tint = OnSurfaceMuted
-                                )
+                            SpaceQuickButton("回收站", Icons.Filled.Delete, Modifier.weight(1f)) {
+                                onOpenTrash(spaceId)
                             }
-                            IconButton(onClick = {
+                            SpaceQuickButton("云端目录", Icons.Filled.Cloud, Modifier.weight(1f)) {
                                 showStorage = true
                                 viewModel.loadStorageStats()
-                            }) {
-                                Icon(
-                                    imageVector = Icons.Filled.Cloud,
-                                    contentDescription = "云端存储情况",
-                                    tint = PrimaryBlue
-                                )
+                            }
+                            SpaceQuickButton("同步日志", Icons.Filled.History, Modifier.weight(1f)) {
+                                onOpenActivityLog(spaceId)
                             }
                         }
+                    }
+                    item {
+                        Text(
+                            text = "本地目录",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                     if (mappings.isEmpty()) {
                         item {
@@ -312,36 +333,50 @@ fun SpaceDetailScreen(
                             )
                         }
                     }
-                    item {
-                        SectionHeader(
-                            title = "参与设备",
-                            actionText = when {
-                                canManageMembers -> "管理"
-                                thisDeviceIsMember -> "退出空间"
-                                else -> null
-                            },
-                            onAction = when {
-                                canManageMembers -> ({ manageMembers = true })
-                                thisDeviceIsMember -> ({ exitConfirm = true })
-                                else -> null
-                            }
-                        )
-                    }
-                    if (members.isEmpty()) {
-                        item { Text("暂无成员信息，请刷新重试", color = OnSurfaceMuted) }
-                    } else {
-                        items(members, key = { it.deviceId }) { member ->
-                            MemberRow(member = member, thisDeviceId = viewModel.currentDeviceId)
-                        }
-                    }
                     item { SectionHeader(title = "同步任务") }
                     item {
-                        SpaceTaskSummaryCard(
-                            stats = syncStats,
-                            onRetryAllFailed = viewModel::retryAllFailed
-                        )
+                        SpaceTaskSummaryCard(stats = syncStats)
                     }
-                    if (tasks.isEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TaskFilter.entries.forEach { filter ->
+                                FilterChip(
+                                    selected = taskFilter == filter,
+                                    onClick = {
+                                        taskFilter = if (taskFilter == filter) null else filter
+                                    },
+                                    label = {
+                                        val count = when (filter) {
+                                            TaskFilter.RUNNING -> runningCount
+                                            TaskFilter.SUCCESS -> successCount
+                                            TaskFilter.FAILED -> failedCount
+                                        }
+                                        val label = when (filter) {
+                                            TaskFilter.RUNNING -> "进行中"
+                                            TaskFilter.SUCCESS -> "成功"
+                                            TaskFilter.FAILED -> "失败"
+                                        }
+                                        Text("$label $count", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            if (failedCount > 0) {
+                                TextButton(
+                                    onClick = viewModel::retryAllFailed,
+                                    enabled = resolvingTaskId == null,
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Text("全部重试", color = PrimaryBlue, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                        }
+                    }
+                    if (filteredTasks.isEmpty()) {
                         item {
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
@@ -350,23 +385,19 @@ fun SpaceDetailScreen(
                             ) {
                                 EmptyStateView(
                                     icon = Icons.Filled.Sync,
-                                    title = "暂无待办任务",
-                                    subtitle = "该空间待上传、待下载、待删除的任务都会在此列出"
+                                    title = "暂无同步任务",
+                                    subtitle = "该空间的同步任务会在此列出，可按 进行中 / 成功 / 失败 筛选"
                                 )
                             }
                         }
                     } else {
-                        items(tasks, key = { it.id }) { task ->
-                            val conflict = app.container.syncEngine.isResolvablePathConflict(task)
+                        itemsIndexed(filteredTasks, key = { _, task -> task.id }) { index, task ->
                             SyncTaskCard(
+                                order = index + 1,
                                 task = task,
-                                conflictResolvable = conflict,
-                                localSize = conflictLocalSizes[task.id],
                                 resolving = resolvingTaskId == task.id,
-                                onRetry = { viewModel.retryTask(task) },
                                 onCancel = { viewModel.cancelTask(task) },
-                                onKeepLocal = { conflictChoice = task to true },
-                                onKeepCloud = { conflictChoice = task to false }
+                                onShowDetail = { viewModel.openTaskFailureDetail(task) }
                             )
                         }
                     }
@@ -377,16 +408,6 @@ fun SpaceDetailScreen(
         SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
     }
 
-    if (manageMembers) {
-        MemberManageDialog(
-            devices = devices,
-            members = members,
-            changingDeviceId = membershipChanging,
-            onCheckedChange = viewModel::setMembership,
-            onDismiss = { manageMembers = false }
-        )
-    }
-
     if (showStorage) {
         StorageStatsSheet(
             stats = storageStats,
@@ -394,40 +415,26 @@ fun SpaceDetailScreen(
         )
     }
 
-    if (exitConfirm) {
-        ConfirmBottomSheet(
-            title = "退出空间",
-            message = "确定让本机退出该空间吗？退出后本机不再参与同步。",
-            confirmText = "退出空间",
-            onConfirm = {
-                viewModel.exitSpace()
-                exitConfirm = false
+    taskFailureDetail?.let { detail ->
+        val state = detailTask?.state
+        FailureDetailSheet(
+            detail = detail,
+            busy = resolvingTaskId != null,
+            canResolve = state == SyncTaskState.FAILED,
+            onKeepLocal = { viewModel.resolveTaskFile(FileResolveAction.KEEP_LOCAL) },
+            onKeepCloud = { viewModel.resolveTaskFile(FileResolveAction.KEEP_CLOUD) },
+            onDeleteBoth = { viewModel.resolveTaskFile(FileResolveAction.DELETE_BOTH) },
+            onDismiss = viewModel::closeTaskFailureDetail,
+            onRetry = if (state != null && TaskPresentation.canRetry(state)) {
+                { viewModel.retryDetailTask() }
+            } else {
+                null
             },
-            onDismiss = { exitConfirm = false }
-        )
-    }
-
-    conflictChoice?.let { (task, keepLocal) ->
-        val localSizeText = conflictLocalSizes[task.id]?.let { formatFileSize(it) } ?: "未知"
-        val cloudSizeText = formatFileSize(task.size)
-        ConfirmBottomSheet(
-            title = if (keepLocal) "保留本地版本" else "保留云端版本",
-            message = buildString {
-                append(task.remoteRelativePath.substringAfterLast('/'))
-                append('\n')
-                append("云端 $cloudSizeText · 本地 $localSizeText\n\n")
-                if (keepLocal) {
-                    append("确认后将以本地内容覆盖云端同名文件（云端当前版本将被删除替代），保持两端严格一致。")
-                } else {
-                    append("确认后本地当前文件将移入应用回收站，随后重新下载云端版本，保持两端严格一致。")
-                }
-            },
-            confirmText = "确认保留",
-            onConfirm = {
-                viewModel.resolveConflict(task, keepLocal)
-                conflictChoice = null
-            },
-            onDismiss = { conflictChoice = null }
+            onCancelTask = if (state != null && TaskPresentation.canCancel(state)) {
+                { viewModel.cancelDetailTask() }
+            } else {
+                null
+            }
         )
     }
 }
@@ -606,77 +613,106 @@ private fun FolderMappingCard(
     }
 }
 
-/** 该空间的任务概况：待处理只统计从未执行的任务（等待执行/等待重试），进行中与失败单独计数。 */
+/** 该空间的待处理任务统计：按操作类型分列展示，纯统计无操作入口。 */
 @Composable
 private fun SpaceTaskSummaryCard(
-    stats: com.photosync.app.data.local.SyncTaskStats,
-    onRetryAllFailed: () -> Unit
+    stats: com.photosync.app.data.local.SyncTaskStats
 ) {
-    val pending = stats.pendingUploads + stats.pendingDownloads + stats.pendingMutations
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                text = when {
-                    stats.failedTasks > 0 -> "${stats.failedTasks} 个任务失败，可重试"
-                    stats.runningTasks > 0 -> "正在执行 ${stats.runningTasks} 个任务"
-                    pending > 0 -> "还有 $pending 个变更待同步"
-                    else -> "没有待处理的同步任务"
-                },
-                fontWeight = FontWeight.SemiBold,
-                color = if (stats.failedTasks > 0) ErrorRed else PrimaryBlue
-            )
-            Text(
-                text = "上传 ${stats.pendingUploads} · 下载 ${stats.pendingDownloads} · 删除 ${stats.pendingDeletes} · 重命名 ${stats.pendingRenames}",
-                style = MaterialTheme.typography.bodySmall,
-                color = OnSurfaceMuted,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Text(
-                text = "成功 ${stats.completedTasks} · 进行中 ${stats.runningTasks} · 失败 ${stats.failedTasks}",
-                style = MaterialTheme.typography.bodySmall,
-                color = OnSurfaceMuted,
-                modifier = Modifier.padding(top = 2.dp)
-            )
-            if (stats.failedTasks > 0) {
-                TextButton(
-                    onClick = onRetryAllFailed,
-                    contentPadding = PaddingValues(horizontal = 0.dp)
-                ) {
-                    Text("全部重试", color = PrimaryBlue)
-                }
-            }
+        Row(
+            modifier = Modifier.padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SummaryStatCell("上传", stats.pendingUploads, Modifier.weight(1f))
+            SummaryStatCell("下载", stats.pendingDownloads, Modifier.weight(1f))
+            SummaryStatCell("删除", stats.pendingDeletes, Modifier.weight(1f))
+            SummaryStatCell("重命名", stats.pendingRenames, Modifier.weight(1f))
         }
     }
 }
 
-/** 单个同步任务卡片：状态、进度、错误与重试/取消操作；路径冲突失败时提供 本地/云端 保留选择。 */
+@Composable
+private fun SummaryStatCell(label: String, count: Int, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = PrimaryBlue
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = OnSurfaceMuted,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+    }
+}
+
+/** 本地目录上方的快捷入口按钮：图标 + 文字。 */
+@Composable
+private fun SpaceQuickButton(
+    label: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.height(40.dp),
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1
+        )
+    }
+}
+
+/** 单个同步任务卡片：状态、进度、错误；进行中任务提供「取消」，其余任务操作收纳到「处理」入口。 */
 @Composable
 private fun SyncTaskCard(
+    order: Int,
     task: LocalSyncTask,
-    conflictResolvable: Boolean = false,
-    localSize: Long? = null,
     resolving: Boolean = false,
-    onRetry: () -> Unit = {},
     onCancel: () -> Unit = {},
-    onKeepLocal: () -> Unit = {},
-    onKeepCloud: () -> Unit = {}
+    onShowDetail: () -> Unit = {}
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // 左上角自然顺序编号
+                Text(
+                    text = order.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    modifier = Modifier
+                        .background(PrimaryBlue, RoundedCornerShape(6.dp))
+                        .padding(horizontal = 7.dp, vertical = 1.dp)
+                )
+                Spacer(Modifier.width(8.dp))
                 Icon(
                     imageVector = TaskPresentation.typeIcon(task.type),
                     contentDescription = null,
                     tint = PrimaryBlue,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -707,74 +743,89 @@ private fun SyncTaskCard(
                 color = OnSurfaceMuted,
                 modifier = Modifier.padding(top = 2.dp)
             )
+            // 信息行：类型/大小/尝试次数/更新时间，占满一整行
             Text(
                 text = buildString {
                     append(TaskPresentation.typeLabel(task.type))
-                    if (task.size > 0) append(" · ${formatFileSize(task.size)}")
+                    if (task.size > 0) append(" ${formatFileSize(task.size)}")
+                    append(" · 尝试 ${task.attempt} 次")
+                    append(" · 更新于 ${TaskPresentation.formatTime(task.updatedAt)}")
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = OnSurfaceMuted,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Text(
-                text = "更新于 ${TaskPresentation.formatTime(task.updatedAt)} · 尝试 ${task.attempt} 次",
-                style = MaterialTheme.typography.bodySmall,
-                color = OnSurfaceMuted,
-                modifier = Modifier.padding(top = 2.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             if (task.state == SyncTaskState.RUNNING && task.size > 0) {
                 Text(
                     text = "${formatFileSize(task.bytesTransferred)} / ${formatFileSize(task.size)} · ${TaskPresentation.progressText(task.bytesTransferred, task.size)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = PrimaryBlue,
-                    modifier = Modifier.padding(top = 8.dp)
+                    modifier = Modifier.padding(top = 2.dp)
                 )
-                LinearProgressIndicator(
-                    progress = { (task.bytesTransferred.toFloat() / task.size.toFloat()).coerceIn(0f, 1f) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp)
-                )
-            }
-            if (conflictResolvable) {
-                Text(
-                    text = "云端 ${formatFileSize(task.size)} · 本地 ${localSize?.let { formatFileSize(it) } ?: "未知"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = PrimaryBlue,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
-            }
-            val error = TaskPresentation.errorText(task.error)
-            if (error != null) {
-                Text(
-                    text = error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = ErrorRed,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
-            }
-            if (conflictResolvable || TaskPresentation.canRetry(task.state) || TaskPresentation.canCancel(task.state)) {
+                // 进行中：进度条在左（压缩长度），右侧仅「取消」
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (conflictResolvable) {
-                        // 冲突处理按钮靠左：点哪个保留哪个，删掉另外一个，保证两端严格一致
-                        TextButton(
-                            onClick = onKeepLocal,
-                            enabled = !resolving
-                        ) { Text("本地", color = PrimaryBlue) }
-                        TextButton(
-                            onClick = onKeepCloud,
-                            enabled = !resolving
-                        ) { Text("云端", color = PrimaryBlue) }
+                    LinearProgressIndicator(
+                        progress = { (task.bytesTransferred.toFloat() / task.size.toFloat()).coerceIn(0f, 1f) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = onCancel,
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .height(20.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                    ) {
+                        Text("取消", style = MaterialTheme.typography.labelMedium)
                     }
-                    Spacer(Modifier.weight(1f))
-                    if (TaskPresentation.canCancel(task.state)) {
-                        TextButton(onClick = onCancel) { Text("取消") }
+                }
+            }
+            if (task.state == SyncTaskState.RUNNING && task.size <= 0) {
+                // 大小未知的进行中任务：仅显示「取消」
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(
+                        onClick = onCancel,
+                        modifier = Modifier.height(28.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                    ) {
+                        Text("取消", style = MaterialTheme.typography.labelMedium)
                     }
-                    if (TaskPresentation.canRetry(task.state)) {
-                        TextButton(onClick = onRetry) { Text("重试", color = PrimaryBlue) }
+                }
+            }
+            if (task.state != SyncTaskState.COMPLETED && task.state != SyncTaskState.RUNNING) {
+                // 操作行：左侧失败原因（没有则留空），右侧「处理」入口（重试/取消收纳在处理面板内）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = TaskPresentation.errorText(task.error) ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ErrorRed,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = onShowDetail,
+                        enabled = !resolving,
+                        modifier = Modifier.height(28.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                    ) {
+                        Text("处理", color = PrimaryBlue, style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -782,98 +833,5 @@ private fun SyncTaskCard(
     }
 }
 
-@Composable
-private fun MemberRow(member: SpaceMemberDto, thisDeviceId: String?) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Smartphone, contentDescription = null, tint = PrimaryBlue)
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = member.deviceName + if (member.deviceId == thisDeviceId) "（本机）" else "",
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = "${platformLabel(member.platform)} · ${roleLabel(member.role)} · 最近在线 ${formatIsoTime(member.lastSeenAt)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = OnSurfaceMuted
-                )
-            }
-            Icon(
-                imageVector = if (member.online) Icons.Filled.CheckCircle else Icons.Filled.CloudOff,
-                contentDescription = null,
-                tint = if (member.online) SuccessGreen else OnSurfaceMuted,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = if (member.online) "在线" else "离线",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (member.online) SuccessGreen else OnSurfaceMuted
-            )
-        }
-    }
-}
-
-@Composable
-private fun MemberManageDialog(
-    devices: List<LocalDevice>,
-    members: List<SpaceMemberDto>,
-    changingDeviceId: String?,
-    onCheckedChange: (String, Boolean) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("管理参与设备") },
-        text = {
-            Column {
-                Text("勾选本账号下要加入空间的设备；取消勾选会将设备移出空间。", color = OnSurfaceMuted)
-                Spacer(Modifier.height(12.dp))
-                if (devices.isEmpty()) {
-                    Text("设备列表为空，请先在设备管理页刷新或注册设备")
-                } else {
-                    LazyColumn(modifier = Modifier.heightIn(max = 380.dp)) {
-                        items(devices, key = { it.id }) { device ->
-                            val joined = members.any { it.deviceId == device.id }
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = joined,
-                                    onCheckedChange = { onCheckedChange(device.id, it) },
-                                    enabled = changingDeviceId == null
-                                )
-                                Column {
-                                    Text(device.deviceName + if (device.isThisDevice) "（本机）" else "")
-                                    Text(
-                                        if (changingDeviceId == device.id) "正在更新…" else device.platform,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = OnSurfaceMuted
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } }
-    )
-}
-
-private fun platformLabel(platform: String): String =
-    if (platform.equals("android", ignoreCase = true)) "Android" else platform
-
-private fun roleLabel(role: String): String = when (role) {
-    "owner" -> "所有者"
-    "admin" -> "管理员"
-    "member" -> "成员"
-    "viewer" -> "只读"
-    else -> role
-}
+/** 同步任务筛选维度；null 表示全部。 */
+enum class TaskFilter { RUNNING, SUCCESS, FAILED }

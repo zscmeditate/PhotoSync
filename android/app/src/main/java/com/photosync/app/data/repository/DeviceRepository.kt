@@ -149,6 +149,7 @@ class DeviceRepository(
 
     private fun DeviceDto.toLocal(): LocalDevice {
         val localId = tokenStore.localDeviceId
+        val thisDevice = localId != null && localId == id
         return LocalDevice(
             id = id,
             deviceName = deviceName,
@@ -156,21 +157,22 @@ class DeviceRepository(
             credentialStatus = credentialStatus,
             isPrimary = isPrimary,
             isRejoinRequested = isRejoinRequested,
-            isThisDevice = localId != null && localId == id,
-            online = isRecentlySeen(lastSeenAt),
+            isThisDevice = thisDevice,
+            // 本机正在运行 App 即为在线，不依赖服务端心跳时间，避免时钟偏差/心跳延迟造成误显示离线
+            online = if (thisDevice) true else isRecentlySeen(lastSeenAt),
             createdAt = createdAt,
             lastSeenAt = lastSeenAt
         )
     }
 
     companion object {
-        /** 契约中的设备对象没有 online 字段，按 lastSeenAt 最近 5 分钟判定在线。 */
+        /** 契约中的设备对象没有 online 字段，按 lastSeenAt 最近 5 分钟判定在线；容忍服务器时钟偏快（负偏差）。 */
         fun isRecentlySeen(lastSeenAt: String?, withinMinutes: Long = 5): Boolean {
             if (lastSeenAt.isNullOrBlank()) return false
             return try {
                 val seen = Instant.parse(lastSeenAt)
                 val diff = Duration.between(seen, Instant.now())
-                !diff.isNegative && diff.toMinutes() < withinMinutes
+                diff.toMinutes() < withinMinutes
             } catch (e: Exception) {
                 false
             }

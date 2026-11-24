@@ -83,15 +83,15 @@ data class SyncTaskStats(
 
 @Dao
 interface LocalSyncTaskDao {
-    /** 任务统计：待处理仅统计从未执行的任务（等待执行/等待重试），进行中与失败单独计数。 */
+    /** 任务统计：各类型计数含执行中（RUNNING）任务，进行中/失败/完成单独计数。 */
     @Query(
         """
         SELECT
-            COALESCE(SUM(CASE WHEN type = 'UPLOAD' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingUploads,
-            COALESCE(SUM(CASE WHEN type = 'DOWNLOAD' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDownloads,
-            COALESCE(SUM(CASE WHEN type IN ('DELETE', 'RENAME') AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingMutations,
-            COALESCE(SUM(CASE WHEN type = 'DELETE' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDeletes,
-            COALESCE(SUM(CASE WHEN type = 'RENAME' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingRenames,
+            COALESCE(SUM(CASE WHEN type = 'UPLOAD' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingUploads,
+            COALESCE(SUM(CASE WHEN type = 'DOWNLOAD' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDownloads,
+            COALESCE(SUM(CASE WHEN type IN ('DELETE', 'RENAME') AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingMutations,
+            COALESCE(SUM(CASE WHEN type = 'DELETE' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDeletes,
+            COALESCE(SUM(CASE WHEN type = 'RENAME' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingRenames,
             COALESCE(SUM(CASE WHEN state = 'FAILED' THEN 1 ELSE 0 END), 0) AS failedTasks,
             COALESCE(SUM(CASE WHEN state = 'RUNNING' THEN 1 ELSE 0 END), 0) AS runningTasks,
             COALESCE(SUM(CASE WHEN state = 'COMPLETED' THEN 1 ELSE 0 END), 0) AS completedTasks
@@ -175,6 +175,49 @@ interface LocalSyncTaskDao {
     )
     suspend fun countActiveTasks(spaceId: String, mappingId: String, remoteRelativePath: String): Int
 
+    /**
+     * 失败处理会为同一路径补建新的下载/上传任务；
+     * 先移除该路径的旧活动任务，避免被去重逻辑判定为“已有任务”而静默跳过。
+     */
+    @Query(
+        """
+        DELETE FROM local_sync_tasks
+        WHERE spaceId = :spaceId AND mappingId = :mappingId
+          AND remoteRelativePath = :remoteRelativePath
+          AND state IN ('PENDING', 'RETRY', 'FAILED')
+        """
+    )
+    suspend fun deleteActiveTasksForRemotePath(
+        spaceId: String,
+        mappingId: String,
+        remoteRelativePath: String
+    )
+
+    /**
+     * 不依赖远端事件的独立下载任务（失败处理「云端优先」补建），按创建顺序取出执行。
+     * 仅取目录处于 ACTIVE 的任务：目录正在扫描/暂不可用时先跳过，避免误判为失败。
+     */
+    @Query(
+        """
+        SELECT t.* FROM local_sync_tasks t
+        JOIN local_folder_mappings m ON m.id = t.mappingId
+        WHERE t.spaceId = :spaceId AND t.type = 'DOWNLOAD' AND t.state IN ('PENDING', 'RETRY')
+          AND (t.eventRevision IS NULL OR t.eventRevision = '')
+          AND m.status = 'ACTIVE'
+        ORDER BY t.createdAt ASC, t.id ASC LIMIT 1
+        """
+    )
+    suspend fun nextStandaloneDownload(spaceId: String): LocalSyncTask?
+
+    /** 该空间下仍有进行中/失败任务（未处理完）的远端路径，补齐缺失文件时要跳过。 */
+    @Query(
+        """
+        SELECT remoteRelativePath FROM local_sync_tasks
+        WHERE spaceId = :spaceId AND state IN ('PENDING', 'RUNNING', 'RETRY', 'FAILED')
+        """
+    )
+    suspend fun activeRemotePaths(spaceId: String): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(task: LocalSyncTask)
 
@@ -228,9 +271,23 @@ interface LocalSyncTaskDao {
     )
     suspend fun retryTask(id: String, now: Long)
 
-    /** 任务中心取消：仅允许取消尚未执行或已失败的任务，运行中的任务由 Worker 自行结束。 */
-    @Query("DELETE FROM local_sync_tasks WHERE id = :id AND state IN ('PENDING', 'RETRY', 'FAILED')")
+    /** 任务中心取消：删除任务行；运行中的任务由引擎在分片/进度边界发现行已删除后中断传输。 */
+    @Query("DELETE FROM local_sync_tasks WHERE id = :id AND state IN ('PENDING', 'RUNNING', 'RETRY', 'FAILED')")
     suspend fun cancelTask(id: String)
+
+    /**
+     * 取消进行中的上传/下载：不删除任务，而是回到待执行队列末尾。
+     * createdAt 刷新为当前时间保证排到最后；进度归零，断点数据（uploadId/临时文件）仍可复用。
+     */
+    @Query(
+        """
+        UPDATE local_sync_tasks
+        SET state = 'PENDING', error = NULL, createdAt = :now, updatedAt = :now,
+            bytesTransferred = 0, uploadedParts = 0, nextPartNumber = 1
+        WHERE id = :id AND state = 'RUNNING' AND type IN ('UPLOAD', 'DOWNLOAD')
+        """
+    )
+    suspend fun moveRunningTaskToQueueEnd(id: String, now: Long)
 
     @Query("DELETE FROM local_sync_tasks WHERE mappingId = :mappingId")
     suspend fun deleteByMapping(mappingId: String)

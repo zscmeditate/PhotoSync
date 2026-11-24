@@ -41,12 +41,12 @@ import com.photosync.app.ui.tasks.TaskPresentation
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 
-/** 活动记录：本机最近同步任务的时间线（含已完成、失败与冲突阻塞）。 */
+/** 同步日志：最近同步任务的时间线（含已完成、失败与冲突阻塞）；spaceId 非空时仅展示该空间。 */
 @Composable
-fun ActivityScreen(onBack: () -> Unit) {
+fun ActivityScreen(spaceId: String? = null, onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val viewModel: SyncTasksViewModel = viewModel {
-        SyncTasksViewModel(app.container.syncRepository)
+        SyncTasksViewModel(app.container.syncRepository, spaceId)
     }
     val tasks by viewModel.recent.collectAsStateWithLifecycle()
     val grouped = remember(tasks) {
@@ -54,7 +54,7 @@ fun ActivityScreen(onBack: () -> Unit) {
     }
 
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-        SpacePageHeader(title = "活动记录", onBack = onBack)
+        SpacePageHeader(title = "同步日志", onBack = onBack)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
@@ -64,7 +64,7 @@ fun ActivityScreen(onBack: () -> Unit) {
                 item {
                     EmptyStateView(
                         icon = Icons.Filled.History,
-                        title = "暂无活动",
+                        title = "暂无同步日志",
                         subtitle = "完成一次同步后，这里会按时间记录上传、下载、删除与重命名"
                     )
                 }
@@ -110,11 +110,14 @@ private fun ActivityRow(task: LocalSyncTask) {
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "${TaskPresentation.typeLabel(task.type)} · " +
-                        TaskPresentation.displayName(task.remoteRelativePath),
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    text = TaskPresentation.typeLabel(task.type),
+                    fontWeight = FontWeight.SemiBold
+                )
+                // 文件名单独一行完整显示（不省略），长文件名自动换行
+                Text(
+                    text = TaskPresentation.displayName(task.remoteRelativePath),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 2.dp)
                 )
                 Text(
                     text = task.remoteRelativePath,

@@ -91,12 +91,12 @@ enum class HomeTab(
     val icon: ImageVector
 ) {
     OVERVIEW("首页", Icons.Filled.Home),
-    FILES("文件", Icons.Filled.Folder),
+    FILES("同步空间", Icons.Filled.Folder),
     DEVICES("设备", Icons.Filled.Smartphone),
     SETTINGS("设置", Icons.Filled.Settings)
 }
 
-/** 首页：底部导航 4 Tab（首页 / 文件 / 设备 / 设置） */
+/** 首页：底部导航 4 Tab（首页 / 同步空间 / 设备 / 设置） */
 @Composable
 fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf(HomeTab.OVERVIEW) }
@@ -181,7 +181,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                     onCreateSpace = { navController.navigate(Screen.SpaceCreate.route) },
                     onJoinSpace = { navController.navigate(Screen.JoinSpace.route) },
                     onShowAll = { tab = HomeTab.FILES },
-                    onOpenActivity = { navController.navigate(Screen.ActivityLog.route) }
+                    onOpenActivity = { navController.navigate(Screen.ActivityLog(null).route) }
                 )
                 HomeTab.FILES -> SpaceListScreen(
                     viewModel = spaceViewModel,
@@ -192,8 +192,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                 )
                 HomeTab.DEVICES -> DeviceListScreen()
                 HomeTab.SETTINGS -> SettingsScreen(
-                    onLoggedOut = onLoggedOut,
-                    onOpenActivity = { navController.navigate(Screen.ActivityLog.route) }
+                    onLoggedOut = onLoggedOut
                 )
             }
         }
@@ -341,6 +340,7 @@ private fun HomeOverviewTab(
                 SpaceCard(
                     space = space,
                     hasError = space.id in abnormalSpaceIds,
+                    showParticipants = false,
                     onClick = { onOpenSpace(space.id) }
                 )
                 Spacer(Modifier.height(10.dp))

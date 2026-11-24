@@ -52,6 +52,13 @@ class SyncRepository(
 
     suspend fun cancelTask(taskId: String) = taskDao.cancelTask(taskId)
 
+    /** 取消进行中的上传/下载：保留任务并移到队列末尾，而不是丢弃。 */
+    suspend fun moveRunningTaskToQueueEnd(taskId: String) =
+        taskDao.moveRunningTaskToQueueEnd(taskId, System.currentTimeMillis())
+
+    /** 按 ID 查询任务：引擎用于感知运行中任务是否被用户取消（行已删除）。 */
+    suspend fun getTask(taskId: String) = taskDao.getById(taskId)
+
     fun currentDeviceId(): String? = tokenStore.currentDeviceId()
 
     suspend fun spaceIds(): List<String> = spaceDao.getAll().map { it.id }
@@ -106,6 +113,25 @@ class SyncRepository(
 
     suspend fun recoverRunning(spaceId: String) =
         taskDao.recoverRunning(spaceId, System.currentTimeMillis())
+
+    /** 恢复上次同步被中断后停留在“扫描中”的映射，否则它会被 activeMappings 过滤而永不参与同步。 */
+    suspend fun recoverScanning(spaceId: String) = mappingDao.recoverScanning(spaceId)
+
+    /** 失败处理补建任务前，移除同一路径上的旧活动任务，避免新任务被去重逻辑跳过。 */
+    suspend fun removeActiveTasksForPath(spaceId: String, mappingId: String, localPath: String) =
+        taskDao.deleteActiveTasksForRemotePath(
+            spaceId = spaceId,
+            mappingId = mappingId,
+            remoteRelativePath = RemoteDownloadPlanner.remotePath(localPath)
+        )
+
+    /** 不依赖远端事件的独立下载任务（失败处理「云端优先」补建）。 */
+    suspend fun nextStandaloneDownload(spaceId: String): LocalSyncTask? =
+        taskDao.nextStandaloneDownload(spaceId)
+
+    /** 仍有未完成任务（待执行/进行中/重试/失败）的远端路径。 */
+    suspend fun activeRemotePaths(spaceId: String): List<String> =
+        taskDao.activeRemotePaths(spaceId)
 
     suspend fun requeueFailed(spaceId: String) =
         taskDao.requeueFailed(spaceId, System.currentTimeMillis())

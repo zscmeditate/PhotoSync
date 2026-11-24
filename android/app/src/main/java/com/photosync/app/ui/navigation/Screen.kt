@@ -31,7 +31,12 @@ sealed class Screen(val route: String) {
         companion object { const val ROUTE = "mapping_files/{mappingId}" }
     }
 
-    data object ActivityLog : Screen("activity")
+    /** 活动记录：spaceId 为 null 时展示全部任务时间线，否则仅展示该空间的记录。 */
+    data class ActivityLog(val spaceId: String? = null) : Screen(
+        if (spaceId == null) "activity" else "activity?spaceId=$spaceId"
+    ) {
+        companion object { const val ROUTE = "activity?spaceId={spaceId}" }
+    }
 
     data class SpaceTrash(val spaceId: String) : Screen("trash/$spaceId") {
         companion object { const val ROUTE = "trash/{spaceId}" }

@@ -60,7 +60,10 @@ class FolderScanner(private val context: Context) {
                     ?: throw FolderScanException("目录中存在无法识别名称的项目")
                 if (MediaFileFilter.isTemporarySyncFile(name)) continue
                 // 系统回收站条目（系统已删除的文件）不参与同步。
-                if (MediaFileFilter.isSystemTrashed(name)) continue
+                // MIUI 的 DocumentFile.name 返回展示名（不含 .trashed- 前缀），
+                // 必须同时检查 URI 最后一段才能识别出 ".trashed-<timestamp>-<realname>"。
+                val uriSegment = document.uri.lastPathSegment.orEmpty()
+                if (MediaFileFilter.isSystemTrashed(name) || MediaFileFilter.isSystemTrashed(uriSegment)) continue
                 if (document.isDirectory) {
                     // 本地恢复区是应用内部目录，不能被当成同步内容上传。
                     if (name == LOCAL_TRASH_DIR_NAME) continue

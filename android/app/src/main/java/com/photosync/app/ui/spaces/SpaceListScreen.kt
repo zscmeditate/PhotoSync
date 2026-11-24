@@ -58,9 +58,14 @@ fun SpaceListScreen(
     val canCreateSpace by viewModel.canCreateSpace.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val loadError by viewModel.loadError.collectAsStateWithLifecycle()
+    val membersBySpace by viewModel.membersBySpace.collectAsStateWithLifecycle()
+    val devices by viewModel.devices.collectAsStateWithLifecycle()
+    val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
+    val membershipChanging by viewModel.membershipChanging.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    var abnormalOnly by rememberSaveable { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<LocalSpace?>(null) }
+    var manageSpaceId by remember { mutableStateOf<String?>(null) }
+    var exitTarget by remember { mutableStateOf<LocalSpace?>(null) }
 
     LaunchedEffect(Unit) {
         viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
@@ -70,7 +75,6 @@ fun SpaceListScreen(
         it.status == com.photosync.app.data.local.MappingStatus.ERROR ||
             it.status == com.photosync.app.data.local.MappingStatus.ACCESS_REVOKED
     }.map { it.spaceId }.toSet()
-    val filtered = if (abnormalOnly) spaces.filter { it.id in abnormalSpaceIds } else spaces
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -90,29 +94,13 @@ fun SpaceListScreen(
                     }
                 }
             )
-            Row(
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                FilterChip(
-                    selected = !abnormalOnly,
-                    onClick = { abnormalOnly = false },
-                    label = { Text("全部") }
-                )
-                FilterChip(
-                    selected = abnormalOnly,
-                    onClick = { abnormalOnly = true },
-                    label = { Text("异常") }
-                )
-            }
-
             when {
                 refreshing && spaces.isEmpty() -> {
                     Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
                     }
                 }
-                filtered.isEmpty() -> {
+                spaces.isEmpty() -> {
                     Column(
                         modifier = Modifier
                             .weight(1f)
@@ -124,29 +112,25 @@ fun SpaceListScreen(
                         }
                         EmptyStateView(
                             icon = Icons.Filled.Folder,
-                            title = if (abnormalOnly) "没有异常空间" else "暂无同步空间",
-                            subtitle = if (abnormalOnly) {
-                                "所有本机目录映射均无需处理"
-                            } else if (canCreateSpace) {
+                            title = "暂无同步空间",
+                            subtitle = if (canCreateSpace) {
                                 "创建一个新空间，或加入同一账号下已有的空间，再选择本机目录"
                             } else {
                                 "加入同一账号下已有的空间，再选择本机目录；创建空间需要使用主设备"
                             }
                         )
-                        if (!abnormalOnly) {
-                            if (canCreateSpace) {
-                                PrimaryButton(
-                                    text = "创建同步空间",
-                                    onClick = onCreateSpace,
-                                    leadingIcon = Icons.Filled.Add
-                                )
-                                Spacer(Modifier.height(10.dp))
-                            }
-                            SecondaryButton(
-                                text = "加入已有空间",
-                                onClick = onJoinSpace
+                        if (canCreateSpace) {
+                            PrimaryButton(
+                                text = "创建同步空间",
+                                onClick = onCreateSpace,
+                                leadingIcon = Icons.Filled.Add
                             )
+                            Spacer(Modifier.height(10.dp))
                         }
+                        SecondaryButton(
+                            text = "加入已有空间",
+                            onClick = onJoinSpace
+                        )
                     }
                 }
                 else -> {
@@ -155,10 +139,15 @@ fun SpaceListScreen(
                         contentPadding = PaddingValues(20.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(filtered, key = { it.id }) { space ->
+                        items(spaces, key = { it.id }) { space ->
                             SpaceCard(
                                 space = space,
                                 hasError = space.id in abnormalSpaceIds,
+                                members = membersBySpace[space.id].orEmpty(),
+                                thisDeviceId = viewModel.currentDeviceId,
+                                canManageMembers = canManageMembers,
+                                onManageMembers = { manageSpaceId = space.id },
+                                onExitSpace = { exitTarget = space },
                                 onClick = { onOpenSpace(space.id) },
                                 onRename = { onEditSpace(space.id) },
                                 onDelete = { deleteTarget = space }
@@ -178,6 +167,29 @@ fun SpaceListScreen(
             confirmText = "删除服务器上的整个空间",
             onConfirm = { viewModel.deleteSpace(space.id) },
             onDismiss = { deleteTarget = null }
+        )
+    }
+
+    manageSpaceId?.let { spaceId ->
+        MemberManageDialog(
+            devices = devices,
+            members = membersBySpace[spaceId].orEmpty(),
+            changingDeviceId = membershipChanging,
+            onCheckedChange = { deviceId, join -> viewModel.setMembership(spaceId, deviceId, join) },
+            onDismiss = { manageSpaceId = null }
+        )
+    }
+
+    exitTarget?.let { space ->
+        ConfirmBottomSheet(
+            title = "退出空间",
+            message = "确定让本机退出「${space.name}」？本机目录绑定会被解除，云端文件不受影响。",
+            confirmText = "退出空间",
+            onConfirm = {
+                viewModel.currentDeviceId?.let { viewModel.setMembership(space.id, it, false) }
+                exitTarget = null
+            },
+            onDismiss = { exitTarget = null }
         )
     }
 }

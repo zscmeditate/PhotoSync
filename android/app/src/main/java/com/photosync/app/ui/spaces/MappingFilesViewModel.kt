@@ -157,10 +157,3 @@ class MappingFilesViewModel(
         }
     }
 }
-
-/** 失败详情弹层的 UI 状态。 */
-data class FailureDetailUi(
-    val file: LocalFileIndex,
-    val loading: Boolean,
-    val info: FileFailureInfo? = null
-)

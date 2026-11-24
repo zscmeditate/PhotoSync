@@ -61,8 +61,7 @@ import kotlinx.coroutines.launch
 /** 设置页：账号/服务器、同步调度与诊断入口。 */
 @Composable
 fun SettingsScreen(
-    onLoggedOut: () -> Unit,
-    onOpenActivity: () -> Unit
+    onLoggedOut: () -> Unit
 ) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val context = LocalContext.current
@@ -80,8 +79,6 @@ fun SettingsScreen(
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
-    var exporting by remember { mutableStateOf(false) }
 
     LaunchedEffect(state) {
         if (state is SettingsState.LoggedOut) {
@@ -90,23 +87,6 @@ fun SettingsScreen(
     }
 
     val ready = state as? SettingsState.Ready
-    val exportLogs: () -> Unit = {
-        if (!exporting) {
-            exporting = true
-            scope.launch {
-                runCatching { DiagnosticsExporter.export(context, app.container) }
-                    .onSuccess { file ->
-                        val intent = Intent.createChooser(
-                            DiagnosticsExporter.shareIntent(context, file),
-                            "分享诊断日志"
-                        )
-                        context.startActivity(intent)
-                    }
-                    .onFailure { snackbarHostState.showSnackbar("导出失败：${it.message ?: "未知错误"}") }
-                exporting = false
-            }
-        }
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -208,40 +188,6 @@ fun SettingsScreen(
                 }
             }
 
-            Text(
-                text = "任务与诊断",
-                style = MaterialTheme.typography.titleMedium,
-                color = OnSurfaceMuted,
-                modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
-            )
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    ClickableSettingRow(
-                        icon = Icons.Filled.History,
-                        label = "活动记录",
-                        value = "本机最近的同步活动时间线",
-                        onClick = onOpenActivity
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    ClickableSettingRow(
-                        icon = Icons.Filled.Share,
-                        label = "导出诊断日志",
-                        value = if (exporting) "正在导出…" else "包含设备信息与最近任务，不含登录凭据",
-                        onClick = exportLogs
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    SettingRow(
-                        icon = Icons.Filled.Info,
-                        label = "回收站保留",
-                        value = "服务端默认保留 30 天，过期自动清理"
-                    )
-                }
-            }
-
             Spacer(Modifier.height(32.dp))
             PrimaryButton(
                 text = "退出登录",
@@ -333,47 +279,5 @@ private fun SwitchRow(
         }
         Spacer(Modifier.width(8.dp))
         Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
-}
-
-@Composable
-private fun ClickableSettingRow(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = PrimaryBlue,
-            modifier = Modifier.size(22.dp)
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodySmall,
-                color = OnSurfaceMuted
-            )
-        }
-        Text(
-            text = "›",
-            color = OnSurfaceMuted,
-            fontSize = 20.sp
-        )
     }
 }

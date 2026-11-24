@@ -168,6 +168,18 @@ class SpaceRepository(
         }
     }
 
+    /** 轻量加载空间成员：只拉空间详情，不拉目录映射（空间列表页展示参与设备用）。 */
+    suspend fun loadMembers(spaceId: String): ApiResult<List<SpaceMemberDto>> {
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        val detail = when (val result = apiCall { apiClient.api.getSpace(spaceId, deviceId) }) {
+            is ApiResult.Success -> result.data
+            is ApiResult.Failure -> return result
+        }
+        spaceDao.upsertAll(listOf(detail.space.toLocal(spaceDao.getById(spaceId))))
+        return ApiResult.Success(detail.members)
+    }
+
     suspend fun refreshSpace(spaceId: String): ApiResult<List<SpaceMemberDto>> {
         val deviceId = currentDeviceId()
             ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
@@ -496,12 +508,18 @@ class SpaceRepository(
     ): ApiResult<List<LocalFileIndex>> {
         val original = mappingDao.getById(mappingId)
             ?: return ApiResult.Failure("MAPPING_NOT_FOUND", "本地目录映射不存在")
+        // 上次扫描被中断可能残留 SCANNING：恢复时不能把它写回，否则该映射会被 activeMappings 永久过滤。
+        val restoreStatus = if (original.status == MappingStatus.SCANNING) {
+            MappingStatus.ACTIVE
+        } else {
+            original.status
+        }
         mappingDao.upsert(original.copy(status = MappingStatus.SCANNING, lastScanComplete = false))
 
         val files = try {
             folderScanner.scan(original, onProgress)
         } catch (e: CancellationException) {
-            withContext(NonCancellable) { mappingDao.upsert(original) }
+            withContext(NonCancellable) { mappingDao.upsert(original.copy(status = restoreStatus)) }
             throw e
         } catch (e: FolderAccessException) {
             mappingDao.upsert(
@@ -514,15 +532,21 @@ class SpaceRepository(
         }
 
         val scannedAt = Instant.now().toString()
-        database.withTransaction {
-            fileDao.replaceAfterCompleteScan(mappingId, files)
-            mappingDao.upsert(
-                original.copy(
-                    status = MappingStatus.ACTIVE,
-                    lastScanComplete = true,
-                    lastScannedAt = scannedAt
+        try {
+            database.withTransaction {
+                fileDao.replaceAfterCompleteScan(mappingId, files)
+                mappingDao.upsert(
+                    original.copy(
+                        status = MappingStatus.ACTIVE,
+                        lastScanComplete = true,
+                        lastScannedAt = scannedAt
+                    )
                 )
-            )
+            }
+        } catch (e: CancellationException) {
+            // 扫描已完成但写回索引时被取消：事务回滚，状态仍要还原，避免卡在“扫描中”。
+            withContext(NonCancellable) { mappingDao.upsert(original.copy(status = restoreStatus)) }
+            throw e
         }
         return ApiResult.Success(files)
     }

@@ -135,6 +135,10 @@ interface LocalFolderMappingDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(mapping: LocalFolderMapping)
 
+    /** 恢复上次被中断（进程被杀/同步被取消）后停留在“扫描中”的映射，避免永久不参与同步。 */
+    @Query("UPDATE local_folder_mappings SET status = 'ACTIVE' WHERE spaceId = :spaceId AND status = 'SCANNING'")
+    suspend fun recoverScanning(spaceId: String)
+
     @Query("DELETE FROM local_folder_mappings WHERE id = :id")
     suspend fun deleteById(id: String)
 

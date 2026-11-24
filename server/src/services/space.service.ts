@@ -265,9 +265,22 @@ export class SpaceService {
     const access = await this.requireAccess(userId, spaceId, deviceId);
     const members = await this.deps.spaces.listMembers(spaceId);
     const now = this.now();
+    // 各账号的主设备在本系统中等同管理员，成员列表需要体现角色差异
+    const primaryByUser = new Map<string, string | null>();
+    for (const member of members) {
+      const memberUserId = member.device.userId;
+      if (!primaryByUser.has(memberUserId)) {
+        primaryByUser.set(
+          memberUserId,
+          await this.deps.devices.findPrimaryDeviceId(memberUserId),
+        );
+      }
+    }
     return {
       space: this.toSpaceDto(access.space, access.role ?? 'none'),
-      members: members.map((member) => this.toMemberDto(member, now)),
+      members: members.map((member) =>
+        this.toMemberDto(member, now, primaryByUser.get(member.device.userId) ?? null),
+      ),
     };
   }
 
@@ -277,13 +290,16 @@ export class SpaceService {
     spaceId: string,
     data: SpaceUpdateData,
   ): Promise<SpaceDto> {
-    await this.requireAccess(userId, spaceId);
-    await this.requirePrimaryDevice(userId, deviceId);
+    // 只有管理员（owner/admin；操作设备为主设备时自动具备 admin 角色）才可以修改空间信息
+    const access = await this.requireAccess(userId, spaceId, deviceId);
+    if (access.role !== 'owner' && access.role !== 'admin') {
+      throw spaceForbidden();
+    }
     const updated = await this.deps.spaces.update(spaceId, {
       ...(data.name !== undefined ? { name: data.name.trim() } : {}),
       ...(data.description !== undefined ? { description: data.description } : {}),
     });
-    return this.toSpaceDto(updated, 'admin');
+    return this.toSpaceDto(updated, access.role ?? 'admin');
   }
 
   async deleteSpace(
@@ -305,7 +321,11 @@ export class SpaceService {
     await this.requireOwnedActiveDevice(userId, deviceId);
     const existing = await this.deps.spaces.findMember(spaceId, deviceId);
     const member = await this.deps.spaces.addMember(spaceId, deviceId);
-    return { member: this.toMemberDto(member, this.now()), created: existing === null };
+    const primaryDeviceId = await this.deps.devices.findPrimaryDeviceId(member.device.userId);
+    return {
+      member: this.toMemberDto(member, this.now(), primaryDeviceId),
+      created: existing === null,
+    };
   }
 
   async removeSpaceMember(
@@ -674,12 +694,17 @@ export class SpaceService {
     };
   }
 
-  private toMemberDto(member: SpaceMemberWithDeviceRecord, now: Date): MemberDto {
+  private toMemberDto(
+    member: SpaceMemberWithDeviceRecord,
+    now: Date,
+    primaryDeviceId: string | null = null,
+  ): MemberDto {
     return {
       deviceId: member.deviceId,
       deviceName: member.device.deviceName,
       platform: member.device.platform,
-      role: member.role,
+      // 主设备即管理员（与权限判定一致），其余按成员表角色
+      role: primaryDeviceId !== null && primaryDeviceId === member.deviceId ? 'admin' : member.role,
       joinedAt: member.joinedAt.toISOString(),
       lastSeenAt: member.device.lastSeenAt?.toISOString() ?? null,
       online:
