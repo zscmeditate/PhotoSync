@@ -31,6 +31,11 @@ class SpaceListViewModel(
     val spaces: StateFlow<List<LocalSpace>> = spaceRepository.spaces
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** 本机尚未加入（role=none）的空间：同步空间列表同样展示，进入详情后可申请加入并等待审批 */
+    val pendingSpaces: StateFlow<List<LocalSpace>> = spaceRepository.allSpaces
+        .map { list -> list.filter { it.role == "none" } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     /** 只有主设备可以创建空间；从设备只能加入或退出已有空间 */
     val canCreateSpace: StateFlow<Boolean> = deviceRepository.isThisDevicePrimary
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)

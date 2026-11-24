@@ -54,6 +54,9 @@ fun SpaceListScreen(
     onEditSpace: (String) -> Unit
 ) {
     val spaces by viewModel.spaces.collectAsStateWithLifecycle()
+    val pendingSpaces by viewModel.pendingSpaces.collectAsStateWithLifecycle()
+    // 已加入的空间在上，本机尚未加入的空间排在其后，进入详情即可申请加入
+    val displaySpaces = spaces + pendingSpaces
     val mappings by viewModel.mappings.collectAsStateWithLifecycle()
     val canCreateSpace by viewModel.canCreateSpace.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
@@ -95,12 +98,12 @@ fun SpaceListScreen(
                 }
             )
             when {
-                refreshing && spaces.isEmpty() -> {
+                refreshing && displaySpaces.isEmpty() -> {
                     Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
                     }
                 }
-                spaces.isEmpty() -> {
+                displaySpaces.isEmpty() -> {
                     Column(
                         modifier = Modifier
                             .weight(1f)
@@ -139,18 +142,20 @@ fun SpaceListScreen(
                         contentPadding = PaddingValues(20.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(spaces, key = { it.id }) { space ->
+                        items(displaySpaces, key = { it.id }) { space ->
+                            val joined = space.role != "none"
                             SpaceCard(
                                 space = space,
                                 hasError = space.id in abnormalSpaceIds,
                                 members = membersBySpace[space.id].orEmpty(),
+                                showParticipants = joined,
                                 thisDeviceId = viewModel.currentDeviceId,
-                                canManageMembers = canManageMembers,
-                                onManageMembers = { manageSpaceId = space.id },
-                                onExitSpace = { exitTarget = space },
+                                canManageMembers = canManageMembers && joined,
+                                onManageMembers = if (joined) ({ manageSpaceId = space.id }) else null,
+                                onExitSpace = if (joined) ({ exitTarget = space }) else null,
                                 onClick = { onOpenSpace(space.id) },
-                                onRename = { onEditSpace(space.id) },
-                                onDelete = { deleteTarget = space }
+                                onRename = if (joined) ({ onEditSpace(space.id) }) else null,
+                                onDelete = if (joined) ({ deleteTarget = space }) else null
                             )
                         }
                     }

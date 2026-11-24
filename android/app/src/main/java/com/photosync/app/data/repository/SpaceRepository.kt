@@ -62,8 +62,11 @@ class SpaceRepository(
     private val syncTaskDao = database.localSyncTaskDao()
     private val syncCursorDao = database.localSyncCursorDao()
 
-    /** 首页只展示本机已加入的空间；role=none 表示本机尚未加入，仅用于「加入空间」列表 */
-    val spaces: Flow<List<LocalSpace>> = spaceDao.observeAll()
+    /** 全部空间：包含本机尚未加入（role=none）的空间，同步空间列表用于展示并申请加入 */
+    val allSpaces: Flow<List<LocalSpace>> = spaceDao.observeAll()
+
+    /** 首页只展示本机已加入的空间 */
+    val spaces: Flow<List<LocalSpace>> = allSpaces
         .map { list -> list.filter { it.role != "none" } }
 
     fun observeSpace(spaceId: String): Flow<LocalSpace?> = spaceDao.observeById(spaceId)

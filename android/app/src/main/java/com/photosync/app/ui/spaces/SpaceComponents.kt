@@ -152,6 +152,14 @@ fun SpaceCard(
                         color = OnSurfaceMuted,
                         modifier = Modifier.padding(top = 4.dp)
                     )
+                    if (space.role == "none") {
+                        Text(
+                            text = "本机未加入 · 点击进入后申请加入",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = PrimaryBlue,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                    }
                     if (hasError) {
                         Text(
                             text = "有目录映射需要处理",
@@ -392,6 +400,7 @@ private fun RoleBadge(role: String) {
         "admin" -> "管理员"
         "member" -> "成员"
         "viewer" -> "只读"
+        "none" -> "未加入"
         else -> role
     }
     Text(
