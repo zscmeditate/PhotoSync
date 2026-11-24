@@ -160,6 +160,7 @@ interface LocalSyncTaskDao {
         """
         SELECT * FROM local_sync_tasks
         WHERE spaceId = :spaceId AND type IN ('DELETE', 'RENAME') AND state IN ('PENDING', 'RETRY')
+          AND (eventRevision IS NULL OR eventRevision = '')
         ORDER BY createdAt ASC, id ASC LIMIT 1
         """
     )

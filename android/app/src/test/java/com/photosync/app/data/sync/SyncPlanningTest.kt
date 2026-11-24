@@ -25,6 +25,20 @@ class SyncPlanningTest {
     }
 
     @Test
+    fun systemTrash_detectsNamesAndSafDocumentIds() {
+        assertTrue(MediaFileFilter.isSystemTrashed(".trashed-1803299579-20年吉利帝豪GL2 (1).mp4"))
+        // SAF 文档 ID 不是纯文件名，前缀检查会失效，必须按 ':' 与 '/' 分段判断
+        assertTrue(
+            MediaFileFilter.isSystemTrashPath(
+                "primary:Download/.trashed-1803299579-20年吉利帝豪GL2 (1).mp4"
+            )
+        )
+        assertTrue(MediaFileFilter.isSystemTrashPath("Download/.Trash/a.jpg"))
+        assertFalse(MediaFileFilter.isSystemTrashPath("Download/20年吉利帝豪GL2 (1).mp4"))
+        assertFalse(MediaFileFilter.isSystemTrashPath("primary:DCIM/Camera/IMG_0001.jpg"))
+    }
+
+    @Test
     fun plan_respectsMediaRuleAndSkipsTrashPaths() {
         val media = SyncMappingRule("root", onlyMedia = true)
         assertEquals(

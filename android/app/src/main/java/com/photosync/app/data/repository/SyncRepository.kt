@@ -237,10 +237,42 @@ class SyncRepository(
         database.withTransaction {
             // 系统回收站条目（.trashed-* / .Trash）不再传播删除：
             // 服务端启动维护会统一软删除并广播 file_deleted 事件，这里跳过以免重复删除。
-            val changes = LocalChangeDetector.detect(oldIndex, newIndex)
-                .filterNot { change ->
-                    change is LocalChange.Delete && MediaFileFilter.isSystemTrashPath(change.relativePath)
+            // 兜底：即使扫描器漏掉回收站条目，也绝不上传回收站路径；
+            // 被误判为「改名为回收站名」的变更按原文件删除处理。
+            val changes = LocalChangeDetector.detect(oldIndex, newIndex).flatMap { change ->
+                when (change) {
+                    is LocalChange.Delete ->
+                        if (MediaFileFilter.isSystemTrashPath(change.relativePath)) {
+                            emptyList()
+                        } else {
+                            listOf(change)
+                        }
+                    is LocalChange.UploadNew ->
+                        if (MediaFileFilter.isSystemTrashPath(change.relativePath)) {
+                            emptyList()
+                        } else {
+                            listOf(change)
+                        }
+                    is LocalChange.Modify ->
+                        if (MediaFileFilter.isSystemTrashPath(change.relativePath)) {
+                            emptyList()
+                        } else {
+                            listOf(change)
+                        }
+                    is LocalChange.Rename ->
+                        if (MediaFileFilter.isSystemTrashPath(change.newRelativePath)) {
+                            listOf(
+                                LocalChange.Delete(
+                                    relativePath = change.oldRelativePath,
+                                    fileId = change.fileId,
+                                    baseVersion = change.baseVersion
+                                )
+                            )
+                        } else {
+                            listOf(change)
+                        }
                 }
+            }
             val now = System.currentTimeMillis()
             val coveredPaths = mutableSetOf<String>()
             for (change in changes) {
@@ -285,6 +317,7 @@ class SyncRepository(
             for (file in newIndex) {
                 if (file.status != FileSyncStatus.PENDING_UPLOAD) continue
                 if (file.relativePath in coveredPaths) continue
+                if (MediaFileFilter.isSystemTrashPath(file.relativePath)) continue
                 val remotePath = RemoteDownloadPlanner.remotePath(file.relativePath)
                 if (taskDao.countActiveTasks(spaceId, mapping.id, remotePath) > 0) continue
                 enqueueUploadTask(
@@ -529,6 +562,7 @@ class SyncRepository(
     /**
      * 为非下载类远端事件（file_deleted / file_renamed）创建一个按 revision 去重的标记任务，
      * 用于持久化应用结果、阻塞游标（失败时），与下载任务共享 (spaceId, eventRevision) 唯一约束。
+     * 类型取事件对应语义（DELETE / RENAME），避免任务中心把远端删除显示成“下载”。
      */
     suspend fun getOrCreateEventMarkerTask(
         spaceId: String,
@@ -536,7 +570,8 @@ class SyncRepository(
         localPath: String,
         remotePath: String,
         fileId: String,
-        revision: String
+        revision: String,
+        type: String
     ): LocalSyncTask {
         taskForEvent(spaceId, revision)?.let { return it }
         val now = System.currentTimeMillis()
@@ -544,7 +579,7 @@ class SyncRepository(
             id = UUID.randomUUID().toString(),
             spaceId = spaceId,
             mappingId = mappingId,
-            type = SyncTaskType.DOWNLOAD,
+            type = type,
             state = SyncTaskState.PENDING,
             localRelativePath = localPath,
             remoteRelativePath = remotePath,

@@ -40,15 +40,20 @@ object MediaFileFilter {
      * Android 系统回收站条目：MediaStore 删除会把文件改名成 .trashed-<随机>-<时间戳>…，
      * 属于"系统已删除"的文件，不参与同步。
      */
-    fun isSystemTrashed(name: String): Boolean = name.startsWith(".trashed-")
+    fun isSystemTrashed(name: String): Boolean =
+        name.trim().startsWith(".trashed-", ignoreCase = true)
 
     /** 系统回收站目录（不同 ROM 大小写不一），整个目录跳过。 */
     fun isSystemTrashDir(name: String): Boolean =
-        name.equals(".Trash", ignoreCase = true) || name.equals(".trash", ignoreCase = true)
+        name.trim().equals(".Trash", ignoreCase = true) || name.trim().equals(".trash", ignoreCase = true)
 
-    /** 路径任一段是系统回收站条目或目录时为 true。 */
+    /**
+     * 任一段是系统回收站条目或目录时为 true。
+     * 除正常相对路径外，也接受 SAF 文档 ID（如 `primary:Download/.trashed-<ts>-a.mp4`），
+     * 因此同时按 '/' 与 ':' 切分，避免前缀检查撞上 `primary:` 而失效。
+     */
     fun isSystemTrashPath(path: String): Boolean =
-        path.split('/').any { isSystemTrashed(it) || isSystemTrashDir(it) }
+        path.split('/', ':', '\\').any { isSystemTrashed(it) || isSystemTrashDir(it) }
 }
 
 object RemoteDownloadPlanner {

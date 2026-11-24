@@ -1109,7 +1109,6 @@ class SyncEngine(
             if (event.deviceId == deviceId) return SyncRunResult.SUCCESS
             val existingTask = repository.taskForEvent(spaceId, event.revision)
             if (existingTask?.state == SyncTaskState.COMPLETED) return SyncRunResult.SUCCESS
-            if (existingTask?.state == SyncTaskState.FAILED) return SyncRunResult.FAILURE
             val relativePath = payload.relativePath ?: return SyncRunResult.FAILURE
             val plan = RemoteDownloadPlanner.plan(relativePath, mappings)
                 ?: return SyncRunResult.SUCCESS
@@ -1119,17 +1118,28 @@ class SyncEngine(
             }
             val oldIndex = repository.file(mapping.id, plan.localRelativePath)
             if (oldIndex == null || oldIndex.remoteFileId != payload.fileId) {
+                // 本地已无该文件（典型：下载从未落盘，或上次删除已生效）。
+                // 清理该路径上遗留的下载任务并丢弃旧失败标记，避免任务中心留下
+                // “云端不存在、本地也不存在”的幽灵失败记录。
+                if (existingTask?.state == SyncTaskState.FAILED) repository.cancelTask(existingTask.id)
+                repository.removeActiveTasksForPath(spaceId, mapping.id, plan.localRelativePath)
+                repository.getOrCreateEventMarkerTask(
+                    spaceId, mapping.id, plan.localRelativePath, plan.remoteRelativePath,
+                    payload.fileId, event.revision, SyncTaskType.DELETE
+                ).let { repository.completeTask(it) }
                 return SyncRunResult.SUCCESS
             }
+            if (existingTask?.state == SyncTaskState.FAILED) repository.cancelTask(existingTask.id)
             // 本地已修改但远端要删除：先把本地版本保留为冲突副本并重新上传，再执行远端删除。
             if (isLocalDiverged(mapping, oldIndex)) {
                 preserveLocalAsConflictCopy(mapping, oldIndex)
             }
             fileStore.moveToTrash(mapping, plan.localRelativePath)
             repository.deleteIndex(mapping.id, plan.localRelativePath)
+            repository.removeActiveTasksForPath(spaceId, mapping.id, plan.localRelativePath)
             repository.getOrCreateEventMarkerTask(
                 spaceId, mapping.id, plan.localRelativePath, plan.remoteRelativePath,
-                payload.fileId, event.revision
+                payload.fileId, event.revision, SyncTaskType.DELETE
             ).let { repository.completeTask(it) }
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
@@ -1162,7 +1172,7 @@ class SyncEngine(
             if (oldPlan.mappingId != newPlan.mappingId) {
                 val marker = repository.getOrCreateEventMarkerTask(
                     spaceId, oldPlan.mappingId, oldPlan.localRelativePath, oldPlan.remoteRelativePath,
-                    payload.fileId, event.revision
+                    payload.fileId, event.revision, SyncTaskType.RENAME
                 )
                 repository.markTaskFailed(marker, "SYNC_CONTRACT_INVALID", "跨映射重命名暂不支持")
                 return SyncRunResult.FAILURE
@@ -1178,7 +1188,7 @@ class SyncEngine(
             if (isLocalDiverged(mapping, oldIndex)) {
                 val marker = repository.getOrCreateEventMarkerTask(
                     spaceId, mapping.id, oldPlan.localRelativePath, oldPlan.remoteRelativePath,
-                    payload.fileId, event.revision
+                    payload.fileId, event.revision, SyncTaskType.RENAME
                 )
                 repository.markTaskFailed(marker, "LOCAL_PATH_CONFLICT", "本地文件已修改，未执行远端重命名")
                 return SyncRunResult.FAILURE
@@ -1198,7 +1208,7 @@ class SyncEngine(
             )
             repository.getOrCreateEventMarkerTask(
                 spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
-                payload.fileId, event.revision
+                payload.fileId, event.revision, SyncTaskType.RENAME
             ).let { repository.completeTask(it) }
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {

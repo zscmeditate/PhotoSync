@@ -15,6 +15,7 @@ import com.photosync.app.data.remote.ApiClient
 import com.photosync.app.data.repository.DeviceRepository
 import com.photosync.app.data.repository.SpaceRepository
 import com.photosync.app.data.repository.SyncRepository
+import com.photosync.app.data.sync.FileFailureInfo
 import com.photosync.app.data.sync.SyncEngine
 import com.photosync.app.data.sync.SyncRunResult
 import kotlinx.coroutines.CancellationException
@@ -90,12 +91,33 @@ class SpaceDetailViewModel(
         viewModelScope.launch {
             val index = syncEngine.taskFailureIndex(task)
             _taskFailureDetail.value = FailureDetailUi(file = index, loading = true)
+            val info = syncEngine.fileFailureInfo(index)
+            // 云端与本地都已不存在（典型：远端删除后遗留的下载失败记录），
+            // 没有可处理的对象，直接清理，避免打开后只有“两边都不存在”的死路面板。
+            if (isObsoleteFailure(task, info)) {
+                syncRepository.cancelTask(task.id)
+                closeTaskFailureDetail()
+                _messages.emit("云端与本地文件均已不存在，已清理该失败记录")
+                return@launch
+            }
             _taskFailureDetail.value = FailureDetailUi(
                 file = index,
                 loading = false,
-                info = syncEngine.fileFailureInfo(index)
+                info = info
             )
         }
+    }
+
+    private fun isObsoleteFailure(task: LocalSyncTask, info: FileFailureInfo): Boolean {
+        if (task.state != SyncTaskState.FAILED) return false
+        if (info.cloud != null || info.localSize != null) return false
+        val code = task.error?.substringBefore('：')?.trim()
+        return code in OBSOLETE_FAILURE_CODES
+    }
+
+    private companion object {
+        /** 远端文件/对象已消失导致的失败码，配合“本地也不存在”判定为过期失败记录。 */
+        val OBSOLETE_FAILURE_CODES = setOf("OBJECT_NOT_FOUND", "FILE_NOT_FOUND", "FILE_IS_DELETED")
     }
 
     fun closeTaskFailureDetail() {

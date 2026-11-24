@@ -2,6 +2,7 @@ package com.photosync.app.data.sync
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import com.photosync.app.data.local.FileSyncStatus
 import com.photosync.app.data.local.LocalFileIndex
@@ -61,9 +62,15 @@ class FolderScanner(private val context: Context) {
                 if (MediaFileFilter.isTemporarySyncFile(name)) continue
                 // 系统回收站条目（系统已删除的文件）不参与同步。
                 // MIUI 的 DocumentFile.name 返回展示名（不含 .trashed- 前缀），
-                // 必须同时检查 URI 最后一段才能识别出 ".trashed-<timestamp>-<realname>"。
-                val uriSegment = document.uri.lastPathSegment.orEmpty()
-                if (MediaFileFilter.isSystemTrashed(name) || MediaFileFilter.isSystemTrashed(uriSegment)) continue
+                // 必须检查 URI 里的 SAF 文档 ID，形如 "primary:Download/.trashed-<ts>-<realname>"。
+                // 注意 lastPathSegment 不是纯文件名，前缀检查会失效，需按路径段判断。
+                val documentId = runCatching {
+                    DocumentsContract.getDocumentId(document.uri)
+                }.getOrNull()
+                if (MediaFileFilter.isSystemTrashPath(name) ||
+                    MediaFileFilter.isSystemTrashPath(document.uri.lastPathSegment.orEmpty()) ||
+                    (documentId != null && MediaFileFilter.isSystemTrashPath(documentId))
+                ) continue
                 if (document.isDirectory) {
                     // 本地恢复区是应用内部目录，不能被当成同步内容上传。
                     if (name == LOCAL_TRASH_DIR_NAME) continue
