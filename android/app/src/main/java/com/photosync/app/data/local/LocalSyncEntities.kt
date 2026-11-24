@@ -74,8 +74,11 @@ data class SyncTaskStats(
     val pendingUploads: Int = 0,
     val pendingDownloads: Int = 0,
     val pendingMutations: Int = 0,
+    val pendingDeletes: Int = 0,
+    val pendingRenames: Int = 0,
     val failedTasks: Int = 0,
-    val runningTasks: Int = 0
+    val runningTasks: Int = 0,
+    val completedTasks: Int = 0
 )
 
 @Dao
@@ -87,8 +90,11 @@ interface LocalSyncTaskDao {
             COALESCE(SUM(CASE WHEN type = 'UPLOAD' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingUploads,
             COALESCE(SUM(CASE WHEN type = 'DOWNLOAD' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDownloads,
             COALESCE(SUM(CASE WHEN type IN ('DELETE', 'RENAME') AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingMutations,
+            COALESCE(SUM(CASE WHEN type = 'DELETE' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDeletes,
+            COALESCE(SUM(CASE WHEN type = 'RENAME' AND state IN ('PENDING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingRenames,
             COALESCE(SUM(CASE WHEN state = 'FAILED' THEN 1 ELSE 0 END), 0) AS failedTasks,
-            COALESCE(SUM(CASE WHEN state = 'RUNNING' THEN 1 ELSE 0 END), 0) AS runningTasks
+            COALESCE(SUM(CASE WHEN state = 'RUNNING' THEN 1 ELSE 0 END), 0) AS runningTasks,
+            COALESCE(SUM(CASE WHEN state = 'COMPLETED' THEN 1 ELSE 0 END), 0) AS completedTasks
         FROM local_sync_tasks WHERE spaceId = :spaceId
         """
     )

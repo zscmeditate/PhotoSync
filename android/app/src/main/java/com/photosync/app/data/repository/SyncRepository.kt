@@ -332,6 +332,18 @@ class SyncRepository(
         oldLocalRelativePath = null, now = System.currentTimeMillis()
     )
 
+    /** 文件失败处理「保留本地」（云端无对应文件）：按新文件上传。 */
+    suspend fun enqueueFileUploadNew(
+        spaceId: String,
+        mapping: LocalFolderMapping,
+        localPath: String,
+        size: Long,
+        sha256: String?
+    ) = enqueueUploadTask(
+        spaceId, mapping, localPath, size, sha256,
+        baseVersion = null, fileId = null, now = System.currentTimeMillis()
+    )
+
     suspend fun upsertIndex(index: LocalFileIndex) = fileDao.upsert(index)
 
     private suspend fun enqueueUploadTask(

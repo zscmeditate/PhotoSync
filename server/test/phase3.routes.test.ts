@@ -277,6 +277,51 @@ describe('Phase 3 新增文件同步 HTTP 流程', () => {
     expect(errorCode(missingObject.json())).toBe('OBJECT_NOT_FOUND');
   });
 
+  it('下载支持 HTTP Range 断点续传（206 + Content-Range），非法区间返回 416', async () => {
+    const content = Buffer.from('hello world');
+    const upload = await uploadAll('Camera/range.bin', content, 'upload-range');
+    const operation = await commitOperation(upload.uploadId, 'operation-range');
+    expect(operation.statusCode).toBe(201);
+
+    // 无 Range 头：完整 200
+    const full = await app.inject({
+      method: 'GET',
+      url: `/api/v1/objects/${upload.objectId}/download?deviceId=${deviceB.id}`,
+      headers: auth,
+    });
+    expect(full.statusCode).toBe(200);
+    expect(full.headers['accept-ranges']).toBe('bytes');
+    expect(full.rawPayload).toEqual(content);
+
+    // 从第 6 字节续传：206 + 剩余内容
+    const partial = await app.inject({
+      method: 'GET',
+      url: `/api/v1/objects/${upload.objectId}/download?deviceId=${deviceB.id}`,
+      headers: { ...auth, range: 'bytes=6-' },
+    });
+    expect(partial.statusCode).toBe(206);
+    expect(partial.headers['content-range']).toBe(`bytes 6-10/${content.byteLength}`);
+    expect(partial.headers['content-length']).toBe(String(content.byteLength - 6));
+    expect(partial.rawPayload).toEqual(content.subarray(6));
+
+    // 起始字节超出对象长度：416
+    const invalid = await app.inject({
+      method: 'GET',
+      url: `/api/v1/objects/${upload.objectId}/download?deviceId=${deviceB.id}`,
+      headers: { ...auth, range: 'bytes=999-' },
+    });
+    expect(invalid.statusCode).toBe(416);
+
+    // 非法 Range 格式：忽略并返回完整内容
+    const malformed = await app.inject({
+      method: 'GET',
+      url: `/api/v1/objects/${upload.objectId}/download?deviceId=${deviceB.id}`,
+      headers: { ...auth, range: 'bytes=abc-' },
+    });
+    expect(malformed.statusCode).toBe(200);
+    expect(malformed.rawPayload).toEqual(content);
+  });
+
   it('支持断点查询、分片与 complete 重放，并拒绝同分片不同内容', async () => {
     const content = Buffer.from('abcdefgh');
     const created = await createUpload('resume.bin', content, 'resume-upload');

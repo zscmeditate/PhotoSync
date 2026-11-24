@@ -20,7 +20,7 @@ private val errorJson = Json {
     isLenient = true
 }
 
-private fun parseErrorMessage(errorBody: ResponseBody?): ApiErrorDetail? {
+internal fun parseErrorMessage(errorBody: ResponseBody?): ApiErrorDetail? {
     val raw = errorBody?.string() ?: return null
     return try {
         errorJson.decodeFromString(ErrorEnvelope.serializer(), raw).error

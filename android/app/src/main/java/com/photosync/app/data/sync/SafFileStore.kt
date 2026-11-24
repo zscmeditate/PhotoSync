@@ -229,11 +229,17 @@ class SafFileStore(private val context: Context) {
         }
     }
 
+    /**
+     * 流式下载并校验，支持断点续传：
+     * - 上次中断留下的临时文件 `.photosync-<taskId>.tmp` 会被复用，通过 [fetch] 的 rangeStart 参数请求剩余字节；
+     * - 服务器返回 206 且区间吻合时追加写入；返回 200/416 或区间不符时清空临时文件从头下载；
+     * - 完成后整文件复算 SHA-256 校验，校验失败会清空临时文件。
+     */
     suspend fun downloadVerified(
         mapping: LocalFolderMapping,
         localRelativePath: String,
         taskId: String,
-        input: InputStream,
+        fetch: suspend (rangeStart: Long) -> DownloadChunk,
         expectedSize: Long,
         expectedSha256: String,
         onProgress: suspend (Long) -> Unit = {}
@@ -247,22 +253,59 @@ class SafFileStore(private val context: Context) {
         }
 
         val tempName = ".photosync-$taskId.tmp"
-        parent.findFile(tempName)?.let { stale ->
-            if (!stale.delete()) throw SafFileException("无法清理上次下载的临时文件")
+        var temp: DocumentFile? = parent.findFile(tempName)?.takeIf { it.isFile }
+        var base = temp?.length() ?: 0L
+        if (temp != null && (base >= expectedSize || base < 0)) {
+            // 临时文件异常（超过期望大小）：丢弃从头下载
+            if (!temp!!.delete()) throw SafFileException("无法清理损坏的下载临时文件")
+            temp = null
+            base = 0L
         }
-        val temp = try {
-            parent.createFile("application/octet-stream", tempName)
-        } catch (e: SecurityException) {
-            throw FolderAccessException("创建下载文件时授权失效")
-        } catch (e: Exception) {
-            throw SafFileException("无法创建下载临时文件", e)
-        } ?: throw SafFileException("无法创建下载临时文件")
 
+        suspend fun dropTemp() {
+            temp?.delete()
+            temp = null
+            base = 0L
+        }
+
+        var chunk = try {
+            fetch(base)
+        } catch (e: CancellationException) {
+            throw e
+        }
+        // 服务器不支持从该断点续传：清空临时文件，从头下载
+        val rangeStart = chunk.rangeStart
+        if (chunk.statusCode == 416 || (base > 0 && (chunk.statusCode != 206 || rangeStart != base))) {
+            chunk.stream.closeQuietly()
+            dropTemp()
+            chunk = try {
+                fetch(0)
+            } catch (e: CancellationException) {
+                throw e
+            }
+        }
+
+        if (base == 0L) {
+            temp = try {
+                parent.findFile(tempName)?.let { stale ->
+                    if (!stale.delete()) throw SafFileException("无法清理上次下载的临时文件")
+                }
+                try {
+                    parent.createFile("application/octet-stream", tempName)
+                } catch (e: SecurityException) {
+                    throw FolderAccessException("创建下载文件时授权失效")
+                } catch (e: Exception) {
+                    throw SafFileException("无法创建下载临时文件", e)
+                } ?: throw SafFileException("无法创建下载临时文件")
+            } catch (e: CancellationException) {
+                throw e
+            }
+        }
+
+        var appended = 0L
         try {
-            val digest = MessageDigest.getInstance("SHA-256")
-            var size = 0L
             val output = try {
-                context.contentResolver.openOutputStream(temp.uri, "w")
+                context.contentResolver.openOutputStream(temp!!.uri, if (base > 0) "wa" else "w")
             } catch (e: SecurityException) {
                 throw FolderAccessException("写入下载文件时授权失效")
             } catch (e: Exception) {
@@ -271,38 +314,38 @@ class SafFileStore(private val context: Context) {
 
             output.use { stream ->
                 val buffer = ByteArray(BUFFER_SIZE)
-                var lastReported = 0L
+                var lastReported = base
                 while (true) {
                     coroutineContext.ensureActive()
-                    val count = input.read(buffer)
+                    val count = chunk.stream.read(buffer)
                     if (count < 0) break
                     if (count > 0) {
                         stream.write(buffer, 0, count)
-                        digest.update(buffer, 0, count)
-                        size += count
+                        appended += count
                         // 节流上报下载进度（每 256KB），供任务中心的进度条实时展示。
-                        if (size - lastReported >= PROGRESS_REPORT_STEP) {
-                            lastReported = size
-                            onProgress(size)
+                        if (base + appended - lastReported >= PROGRESS_REPORT_STEP) {
+                            lastReported = base + appended
+                            onProgress(base + appended)
                         }
                     }
                 }
                 stream.flush()
             }
+            chunk.stream.closeQuietly()
 
-            val actualSha256 = digest.hex()
-            if (size != expectedSize) {
+            val total = base + appended
+            if (total != expectedSize) {
                 throw ContentVerificationException(
-                    "下载长度校验失败：期望 $expectedSize 字节，实际 $size 字节"
+                    "下载长度校验失败：期望 $expectedSize 字节，实际 $total 字节"
                 )
             }
-            if (!actualSha256.equals(expectedSha256, ignoreCase = true)) {
-                throw ContentVerificationException("下载 SHA-256 校验失败")
-            }
+            // 断点续传无法复用中断前的哈希状态，下载完成后整文件复算校验
+            val finalTemp = temp!!
+            verifyDownloadedFile(finalTemp, expectedSize, expectedSha256)
             if (parent.findFile(fileName) != null) {
                 throw LocalPathConflictException("下载期间目标文件已出现，不能覆盖：$localRelativePath")
             }
-            if (!temp.renameTo(fileName)) {
+            if (!finalTemp.renameTo(fileName)) {
                 throw SafFileException("下载已校验，但临时文件重命名失败")
             }
             val renamed = parent.findFile(fileName)
@@ -312,11 +355,57 @@ class SafFileStore(private val context: Context) {
             }
             renamed
         } catch (e: CancellationException) {
-            temp.delete()
+            // 网络中断/被抢占：保留临时文件，下次从断点继续
+            chunk.stream.closeQuietly()
+            throw e
+        } catch (e: ContentVerificationException) {
+            // 内容损坏：丢弃临时文件，重试时从头下载
+            chunk.stream.closeQuietly()
+            dropTemp()
             throw e
         } catch (e: Exception) {
-            temp.delete()
+            // 网络错误等：保留临时文件以便续传
+            chunk.stream.closeQuietly()
             throw e
+        }
+    }
+
+    /** 下载完成后对临时文件整体复算长度与 SHA-256。 */
+    private fun verifyDownloadedFile(temp: DocumentFile, expectedSize: Long, expectedSha256: String) {
+        val digest = MessageDigest.getInstance("SHA-256")
+        var size = 0L
+        val input = try {
+            context.contentResolver.openInputStream(temp.uri)
+        } catch (e: SecurityException) {
+            throw FolderAccessException("校验下载文件时授权失效")
+        } catch (e: Exception) {
+            throw SafFileException("无法读取下载临时文件进行校验", e)
+        } ?: throw SafFileException("无法读取下载临时文件进行校验")
+        input.use { stream ->
+            val buffer = ByteArray(BUFFER_SIZE)
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                if (count > 0) {
+                    digest.update(buffer, 0, count)
+                    size += count
+                }
+            }
+        }
+        if (size != expectedSize) {
+            throw ContentVerificationException(
+                "下载长度校验失败：期望 $expectedSize 字节，实际 $size 字节"
+            )
+        }
+        if (!digest.hex().equals(expectedSha256, ignoreCase = true)) {
+            throw ContentVerificationException("下载 SHA-256 校验失败")
+        }
+    }
+
+    private fun InputStream.closeQuietly() {
+        try {
+            close()
+        } catch (_: Exception) {
         }
     }
 
@@ -434,3 +523,10 @@ class SafFileStore(private val context: Context) {
 }
 
 class LocalPathConflictException(message: String) : Exception(message)
+
+/** 单次下载请求的结果：206 = 续传响应（rangeStart 为实际起始字节），200 = 完整内容，416 = 区间无法满足。 */
+data class DownloadChunk(
+    val stream: InputStream,
+    val statusCode: Int,
+    val rangeStart: Long?
+)

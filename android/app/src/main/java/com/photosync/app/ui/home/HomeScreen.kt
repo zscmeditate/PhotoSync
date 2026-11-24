@@ -1,5 +1,9 @@
 package com.photosync.app.ui.home
 
+import android.os.SystemClock
+import android.widget.Toast
+
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,7 +26,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
@@ -66,9 +69,7 @@ import androidx.navigation.NavHostController
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.MappingStatus
 import com.photosync.app.data.local.SyncTaskType
-import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
-import com.photosync.app.ui.components.IconBadge
 import com.photosync.app.ui.components.SectionHeader
 import com.photosync.app.ui.components.SyncStatus
 import com.photosync.app.ui.components.SyncStatusChip
@@ -79,7 +80,6 @@ import com.photosync.app.ui.spaces.SpaceCard
 import com.photosync.app.ui.spaces.SpaceListScreen
 import com.photosync.app.ui.spaces.SpaceListViewModel
 import com.photosync.app.ui.tasks.TaskPresentation
-import com.photosync.app.ui.theme.AccentCyan
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
@@ -105,11 +105,17 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
         SpaceListViewModel(app.container.spaceRepository, app.container.deviceRepository)
     }
 
-    // 首页是导航根页面，返回手势不再直接退出应用，改为弹出二次确认。
-    var exitConfirm by rememberSaveable { mutableStateOf(false) }
+    // 首页是导航根页面：连续两次返回（间隔 2 秒内）才退出应用，第一次给轻量 Toast 提示。
     val activityContext = LocalContext.current
+    var lastBackAt by rememberSaveable { mutableStateOf(0L) }
     BackHandler {
-        exitConfirm = true
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastBackAt in 1..BACK_EXIT_INTERVAL_MS) {
+            (activityContext as? ComponentActivity)?.finishAffinity()
+        } else {
+            lastBackAt = now
+            Toast.makeText(activityContext, "再按一次退出应用", Toast.LENGTH_SHORT).show()
+        }
     }
 
     Scaffold(
@@ -192,19 +198,10 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
             }
         }
     }
-
-    if (exitConfirm) {
-        ConfirmBottomSheet(
-            title = "退出 PhotoSync",
-            message = "确定要退出应用吗？退出后后台同步仍会按计划运行。",
-            confirmText = "退出应用",
-            onConfirm = {
-                (activityContext as? androidx.activity.ComponentActivity)?.finishAffinity()
-            },
-            onDismiss = { exitConfirm = false }
-        )
-    }
 }
+
+/** 两次返回触发退出的最大间隔（毫秒）。 */
+private const val BACK_EXIT_INTERVAL_MS = 2000L
 
 @Composable
 private fun HomeOverviewTab(
@@ -228,30 +225,12 @@ private fun HomeOverviewTab(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
     ) {
-        // 顶部标题 + 头像
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text(
-                    text = "多设备同步",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "手机 ↔ 你的服务器 ↔ 手机",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = OnSurfaceMuted
-                )
-            }
-            IconBadge(
-                icon = Icons.Filled.AccountCircle,
-                size = 44,
-                background = Brush.horizontalGradient(listOf(PrimaryBlue, AccentCyan))
+        // 顶部标题
+        Column(modifier = Modifier.padding(vertical = 12.dp)) {
+            Text(
+                text = "同步精灵",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
             )
         }
 

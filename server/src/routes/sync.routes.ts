@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authUserId, requireAuth } from '../lib/auth';
 import { fileNotFound, objectNotFound, spaceNotFound } from '../lib/errors';
+import { RangeNotSatisfiableError } from '../lib/object-store';
 import type { JwtService } from '../lib/jwt';
 import type { RealtimeHub } from '../lib/realtime';
 import { parse } from '../lib/validation';
@@ -302,13 +303,35 @@ const syncRoutes: FastifyPluginAsync<SyncRoutesOptions> = async (app, opts) => {
         throw objectNotFound();
       }
       const query = parse(deviceQuerySchema, request.query);
-      const result = await opts.syncService.downloadObject(
-        authUserId(request),
-        params.data.objectId,
-        query.deviceId,
-      );
+      // 支持 HTTP Range 断点续传：客户端大文件下载中断后可从断点继续。
+      const rangeHeader =
+        typeof request.headers.range === 'string' && /^bytes=\d+-\d*$/.test(request.headers.range)
+          ? request.headers.range
+          : undefined;
+      let result: Awaited<ReturnType<typeof opts.syncService.downloadObject>>;
+      try {
+        result = await opts.syncService.downloadObject(
+          authUserId(request),
+          params.data.objectId,
+          query.deviceId,
+          rangeHeader,
+        );
+      } catch (error) {
+        if (error instanceof RangeNotSatisfiableError) {
+          reply.code(416).header('Content-Type', 'application/json').send({
+            error: 'RANGE_NOT_SATISFIABLE',
+            message: 'Requested range not satisfiable',
+          });
+          return reply;
+        }
+        throw error;
+      }
       const fallbackName = result.metadata.fileName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'download';
+      if (rangeHeader) {
+        reply.code(206).header('Content-Range', result.content.contentRange ?? 'bytes 0-/*');
+      }
       reply
+        .header('Accept-Ranges', 'bytes')
         .header('Content-Type', 'application/octet-stream')
         .header('Content-Length', result.content.contentLength ?? Number(result.metadata.size))
         .header('X-SHA256', result.metadata.sha256)

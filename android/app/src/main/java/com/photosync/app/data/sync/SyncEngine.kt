@@ -20,6 +20,7 @@ import com.photosync.app.data.remote.UploadCompleteRequest
 import com.photosync.app.data.remote.UploadCreateRequest
 import com.photosync.app.data.remote.UploadDto
 import com.photosync.app.data.remote.apiCall
+import com.photosync.app.data.remote.parseErrorMessage
 import com.photosync.app.data.repository.SyncRepository
 import com.photosync.app.data.remote.SyncLockRequest
 import kotlinx.coroutines.CancellationException
@@ -28,6 +29,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -815,30 +817,26 @@ class SyncEngine(
                 }
             }
 
-            val response = when (val result = apiCall { api.downloadObject(payload.objectId, deviceId) }) {
-                is ApiResult.Failure -> return downloadRequestFailure(task, result)
-                is ApiResult.Success -> result.data
-            }
             try {
-                response.byteStream().use { input ->
-                    val downloaded = fileStore.downloadVerified(
-                        mapping = mapping,
-                        localRelativePath = plan.localRelativePath,
-                        taskId = task.id,
-                        input = input,
-                        expectedSize = expectedSize,
-                        expectedSha256 = expectedSha256,
-                        onProgress = { transferred ->
-                            repository.updateDownloadProgress(task.id, transferred)
-                        }
-                    )
-                    repository.markSynced(
-                        task,
-                        localIndex(mapping.id, plan.localRelativePath, downloaded, expectedSize, expectedSha256, payload, oldIndex)
-                    )
-                }
-            } finally {
-                response.close()
+                val downloaded = fileStore.downloadVerified(
+                    mapping = mapping,
+                    localRelativePath = plan.localRelativePath,
+                    taskId = task.id,
+                    fetch = { rangeStart ->
+                        downloadChunk(payload.objectId, deviceId, rangeStart)
+                    },
+                    expectedSize = expectedSize,
+                    expectedSha256 = expectedSha256,
+                    onProgress = { transferred ->
+                        repository.updateDownloadProgress(task.id, transferred)
+                    }
+                )
+                repository.markSynced(
+                    task,
+                    localIndex(mapping.id, plan.localRelativePath, downloaded, expectedSize, expectedSha256, payload, oldIndex)
+                )
+            } catch (e: DownloadRequestFailureException) {
+                return downloadRequestFailure(task, e.failure)
             }
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
@@ -1154,22 +1152,43 @@ class SyncEngine(
         }
     }
 
-    /** 文件列表条目是否可用 本地/云端/删除 处理：仅限同步失败且仍有云端关联的文件。 */
+    /** 文件列表条目是否处于同步失败状态（失败详情弹层 + 本地/云端/删除处理入口）。 */
     fun isResolvableFileEntry(file: LocalFileIndex): Boolean =
-        file.status == FileSyncStatus.SYNC_ERROR && !file.remoteFileId.isNullOrBlank()
+        file.status == FileSyncStatus.SYNC_ERROR
 
     /**
-     * 文件列表失败处理「保留本地」：以本地内容按 file_updated 覆盖云端当前版本。
+     * 文件列表失败处理「保留本地」：
+     * 云端有对应文件时按 file_updated 覆盖云端当前版本；
+     * 云端无对应文件（从未上传成功）时按新文件上传本地内容。
      */
     suspend fun resolveFileKeepLocal(file: LocalFileIndex): String? {
         return try {
-            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
             val mapping = repository.mapping(file.mappingId) ?: return "映射不存在"
-            val fileId = file.remoteFileId ?: return "缺少云端文件标识"
             val target = fileStore.findTarget(mapping, file.relativePath)
                 ?: return "本地文件已不存在，可改用「删除」"
             if (!target.isFile) return "本地路径不是文件"
             val digest = fileStore.digest(target)
+            val fileId = file.remoteFileId
+            if (fileId == null) {
+                repository.transaction {
+                    repository.upsertIndex(
+                        file.copy(
+                            status = FileSyncStatus.PENDING_UPLOAD,
+                            size = digest.size,
+                            sha256 = digest.sha256
+                        )
+                    )
+                    repository.enqueueFileUploadNew(
+                        spaceId = mapping.spaceId,
+                        mapping = mapping,
+                        localPath = file.relativePath,
+                        size = digest.size,
+                        sha256 = digest.sha256
+                    )
+                }
+                return null
+            }
+            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
             val versions = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
                 is ApiResult.Failure -> return "查询云端版本失败：${result.message}"
                 is ApiResult.Success -> result.data
@@ -1255,28 +1274,32 @@ class SyncEngine(
      */
     suspend fun resolveFileDeleteBoth(file: LocalFileIndex): String? {
         return try {
-            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
             val mapping = repository.mapping(file.mappingId) ?: return "映射不存在"
-            val fileId = file.remoteFileId ?: return "缺少云端文件标识"
             // 本地文件可能已不存在：缺失时跳过移入回收站
             fileStore.findTarget(mapping, file.relativePath)?.let {
                 if (!fileStore.moveToTrash(mapping, file.relativePath)) {
                     return "本地文件无法移入回收站"
                 }
             }
-            val current = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
-                is ApiResult.Failure -> null
-                is ApiResult.Success -> result.data.versions.firstOrNull()
+            val fileId = file.remoteFileId
+            val deviceId = repository.currentDeviceId()
+            val current = if (fileId != null && deviceId != null) {
+                when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
+                    is ApiResult.Failure -> null
+                    is ApiResult.Success -> result.data.versions.firstOrNull()
+                }
+            } else {
+                null
             }
             repository.transaction {
                 repository.deleteIndex(file.mappingId, file.relativePath)
-                // 云端已不存在时无需提交删除，仅清理本地
+                // 云端无对应文件时仅清理本地
                 if (current != null && current.version > 0) {
                     repository.enqueueFileDeleteTask(
                         spaceId = mapping.spaceId,
                         mapping = mapping,
                         localPath = file.relativePath,
-                        fileId = fileId,
+                        fileId = fileId!!,
                         baseVersion = current.version
                     )
                 }
@@ -1287,6 +1310,38 @@ class SyncEngine(
         } catch (e: Exception) {
             e.message ?: "处理失败"
         }
+    }
+
+    /** 失败详情弹层的数据：云端最新版本信息 + 本地文件实际状态。 */
+    suspend fun fileFailureInfo(file: LocalFileIndex): FileFailureInfo {
+        val mapping = repository.mapping(file.mappingId)
+        val target = mapping?.let {
+            runCatching { fileStore.findTarget(it, file.relativePath) }.getOrNull()
+        }?.takeIf { it.isFile }
+        val localSize = target?.length()
+        val localModifiedAt = target?.lastModified()
+        val fileId = file.remoteFileId
+        val deviceId = repository.currentDeviceId()
+        var cloud: CloudVersionInfo? = null
+        var cloudError: String? = null
+        if (fileId != null && deviceId != null) {
+            when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
+                is ApiResult.Success -> result.data.versions.firstOrNull()?.let {
+                    cloud = CloudVersionInfo(
+                        version = it.version,
+                        size = it.size.toLongOrNull() ?: 0L,
+                        createdAtIso = it.createdAt
+                    )
+                }
+                is ApiResult.Failure -> cloudError = result.message
+            }
+        }
+        return FileFailureInfo(
+            cloud = cloud,
+            cloudError = cloudError,
+            localSize = localSize,
+            localModifiedAt = localModifiedAt
+        )
     }
 
     private suspend fun failDownload(
@@ -1332,7 +1387,6 @@ class SyncEngine(
         }
         return failUpload(task, failure.code ?: "UPLOAD_REQUEST_FAILED", failure.message)
     }
-
     private suspend fun downloadRequestFailure(
         task: LocalSyncTask,
         failure: ApiResult.Failure
@@ -1349,6 +1403,50 @@ class SyncEngine(
         }
         return SyncRunResult.FAILURE
     }
+
+    /**
+     * 发起一次下载请求，供 SafFileStore.downloadVerified 的 fetch 回调使用。
+     * rangeStart > 0 时携带 Range 头请求剩余字节，服务端返回 206 + Content-Range 供续传校验。
+     */
+    private suspend fun downloadChunk(objectId: String, deviceId: String, rangeStart: Long): DownloadChunk {
+        val response = try {
+            api.downloadObject(objectId, deviceId, range = if (rangeStart > 0) "bytes=$rangeStart-" else null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            throw DownloadRequestFailureException(
+                ApiResult.Failure("NETWORK_ERROR", "无法连接服务器，请检查网络与服务器地址", isNetwork = true)
+            )
+        } catch (e: Exception) {
+            throw DownloadRequestFailureException(ApiResult.Failure("UNKNOWN_ERROR", e.message ?: "发生未知错误"))
+        }
+        if (response.code() == 416) {
+            // 服务器无法满足续传区间（临时文件与云端版本不匹配）：交回 SafFileStore 清空从头下载
+            response.raw().close()
+            return DownloadChunk(ByteArrayInputStream(ByteArray(0)), 416, null)
+        }
+        if (!response.isSuccessful) {
+            val detail = parseErrorMessage(response.errorBody())
+            response.raw().close()
+            throw DownloadRequestFailureException(
+                ApiResult.Failure(detail?.code, detail?.message ?: "请求失败（HTTP ${response.code()}）")
+            )
+        }
+        val body = response.body()
+        if (body == null) {
+            response.raw().close()
+            throw DownloadRequestFailureException(ApiResult.Failure("DOWNLOAD_EMPTY_BODY", "下载响应缺少内容"))
+        }
+        return DownloadChunk(
+            stream = body.byteStream(),
+            statusCode = response.code(),
+            rangeStart = parseContentRangeStart(response.headers()["Content-Range"])
+        )
+    }
+
+    /** 解析 Content-Range 头（如 "bytes 1048576-2097151/2097152"）中的起始字节。 */
+    private fun parseContentRangeStart(header: String?): Long? =
+        header?.let { Regex("^bytes (\\d+)-").find(it)?.groupValues?.get(1)?.toLongOrNull() }
 
     private fun isObjectMissing(error: String?): Boolean =
         error?.startsWith(OBJECT_NOT_FOUND) == true
@@ -1428,3 +1526,21 @@ class SyncEngine(
         val OBJECT_EVENT_TYPES = setOf("file_created", "file_updated", "file_restored")
     }
 }
+
+/** 云端最新版本摘要（失败详情弹层展示）。 */
+data class CloudVersionInfo(
+    val version: Int,
+    val size: Long,
+    val createdAtIso: String?
+)
+
+/** 文件失败详情：云端信息（null = 云端无对应文件）+ 本地文件实际状态。 */
+data class FileFailureInfo(
+    val cloud: CloudVersionInfo?,
+    val cloudError: String?,
+    val localSize: Long?,
+    val localModifiedAt: Long?
+)
+
+/** 下载请求失败：在 fetch 回调内包装 ApiResult.Failure 传播到调用点，统一走 downloadRequestFailure 处理。 */
+private class DownloadRequestFailureException(val failure: ApiResult.Failure) : RuntimeException(failure.message)

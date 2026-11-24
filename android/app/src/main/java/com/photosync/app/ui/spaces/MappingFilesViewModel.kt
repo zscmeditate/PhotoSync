@@ -10,6 +10,7 @@ import com.photosync.app.data.remote.ConflictDto
 import com.photosync.app.data.repository.MaintenanceRepository
 import com.photosync.app.data.repository.SpaceRepository
 import com.photosync.app.data.repository.SyncRepository
+import com.photosync.app.data.sync.FileFailureInfo
 import com.photosync.app.data.sync.SyncEngine
 import com.photosync.app.data.sync.SyncScheduler
 import com.photosync.app.ui.util.ErrorMessages
@@ -107,6 +108,26 @@ class MappingFilesViewModel(
 
     fun isResolvable(file: LocalFileIndex): Boolean = syncEngine.isResolvableFileEntry(file)
 
+    /** 失败详情弹层状态：点击「同步失败」标签后加载云端/本地文件信息。 */
+    private val _failureDetail = MutableStateFlow<FailureDetailUi?>(null)
+    val failureDetail: StateFlow<FailureDetailUi?> = _failureDetail.asStateFlow()
+
+    fun openFailureDetail(file: LocalFileIndex) {
+        if (_failureDetail.value?.loading == true) return
+        viewModelScope.launch {
+            _failureDetail.value = FailureDetailUi(file = file, loading = true)
+            _failureDetail.value = FailureDetailUi(
+                file = file,
+                loading = false,
+                info = syncEngine.fileFailureInfo(file)
+            )
+        }
+    }
+
+    fun closeFailureDetail() {
+        _failureDetail.value = null
+    }
+
     /** 失败处理：保留本地 / 保留云端 / 两端都删除。 */
     fun resolveFile(file: LocalFileIndex, action: FileResolveAction) {
         if (_resolvingFileId.value != null) return
@@ -130,8 +151,16 @@ class MappingFilesViewModel(
                 }
             )
             if (error == null) {
+                _failureDetail.value = null
                 SyncScheduler.enqueue(app, force = true)
             }
         }
     }
 }
+
+/** 失败详情弹层的 UI 状态。 */
+data class FailureDetailUi(
+    val file: LocalFileIndex,
+    val loading: Boolean,
+    val info: FileFailureInfo? = null
+)

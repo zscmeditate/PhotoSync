@@ -17,6 +17,16 @@ import type { Config } from '../config';
 export interface ObjectContent {
   body: Readable;
   contentLength?: number;
+  /** 206 响应时的 Content-Range 头，例如 `bytes 100-999/2000`。 */
+  contentRange?: string;
+}
+
+/** 客户端请求的 Range 超出对象长度（等价于 HTTP 416）。 */
+export class RangeNotSatisfiableError extends Error {
+  constructor(objectId: string) {
+    super(`Range not satisfiable for object ${objectId}`);
+    this.name = 'RangeNotSatisfiableError';
+  }
 }
 
 /** 元数据仍存在但对象存储中的内容已丢失（如存储被清理或损坏）。 */
@@ -43,7 +53,7 @@ export interface ObjectStore {
     parts: Array<{ partNumber: number; etag: string }>,
   ): Promise<void>;
   putEmptyObject(objectId: string): Promise<void>;
-  getObject(objectId: string): Promise<ObjectContent>;
+  getObject(objectId: string, range?: string): Promise<ObjectContent>;
   deleteObject(objectId: string): Promise<void>;
 }
 
@@ -161,10 +171,14 @@ export class S3ObjectStore implements ObjectStore {
     );
   }
 
-  async getObject(objectId: string): Promise<ObjectContent> {
+  async getObject(objectId: string, range?: string): Promise<ObjectContent> {
     try {
       const result = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: objectKey(objectId) }),
+        new GetObjectCommand({
+          Bucket: this.bucket,
+          Key: objectKey(objectId),
+          ...(range ? { Range: range } : {}),
+        }),
       );
       if (!result.Body) {
         throw new Error(`S3 object ${objectId} has no response body`);
@@ -173,10 +187,17 @@ export class S3ObjectStore implements ObjectStore {
         result.Body instanceof Readable
           ? result.Body
           : Readable.from(result.Body as AsyncIterable<Uint8Array>);
-      return { body, contentLength: result.ContentLength };
+      return {
+        body,
+        contentLength: result.ContentLength,
+        contentRange: result.ContentRange,
+      };
     } catch (error) {
       if (isStorageError(error, ['NoSuchKey', 'NotFound'], 404)) {
         throw new StorageObjectMissingError(objectId);
+      }
+      if (isStorageError(error, ['InvalidRange', 'RequestedRangeNotSatisfiable'], 416)) {
+        throw new RangeNotSatisfiableError(objectId);
       }
       throw error;
     }

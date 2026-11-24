@@ -240,7 +240,8 @@ interface ApiService {
     @GET("api/v1/objects/{objectId}/download")
     suspend fun downloadObject(
         @Path("objectId") objectId: String,
-        @Query("deviceId") deviceId: String
+        @Query("deviceId") deviceId: String,
+        @Header("Range") range: String? = null
     ): Response<ResponseBody>
 
     @GET("api/v1/files/{fileId}/versions")

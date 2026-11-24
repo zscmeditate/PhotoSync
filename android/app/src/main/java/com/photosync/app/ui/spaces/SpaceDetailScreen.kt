@@ -630,10 +630,16 @@ private fun SpaceTaskSummaryCard(
                 color = if (stats.failedTasks > 0) ErrorRed else PrimaryBlue
             )
             Text(
-                text = "待处理 $pending（上传 ${stats.pendingUploads} · 下载 ${stats.pendingDownloads} · 删除/重命名 ${stats.pendingMutations}）· 进行中 ${stats.runningTasks} · 失败 ${stats.failedTasks}",
+                text = "上传 ${stats.pendingUploads} · 下载 ${stats.pendingDownloads} · 删除 ${stats.pendingDeletes} · 重命名 ${stats.pendingRenames}",
                 style = MaterialTheme.typography.bodySmall,
                 color = OnSurfaceMuted,
                 modifier = Modifier.padding(top = 4.dp)
+            )
+            Text(
+                text = "成功 ${stats.completedTasks} · 进行中 ${stats.runningTasks} · 失败 ${stats.failedTasks}",
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(top = 2.dp)
             )
             if (stats.failedTasks > 0) {
                 TextButton(

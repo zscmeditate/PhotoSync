@@ -2,11 +2,13 @@ package com.photosync.app.ui.spaces
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,8 +19,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -74,9 +79,8 @@ fun MappingFilesScreen(
     val resolvingFileId by viewModel.resolvingFileId.collectAsStateWithLifecycle()
     val conflicts by viewModel.conflicts.collectAsStateWithLifecycle()
     val conflictResolvingId by viewModel.conflictResolvingId.collectAsStateWithLifecycle()
+    val failureDetail by viewModel.failureDetail.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    // 失败处理选择：file to action，确认后才执行
-    var resolveChoice by remember { mutableStateOf<Pair<LocalFileIndex, FileResolveAction>?>(null) }
     // 服务端冲突处理选择：conflict to resolution
     var conflictPending by remember { mutableStateOf<Pair<ConflictDto, String>?>(null) }
 
@@ -133,26 +137,23 @@ fun MappingFilesScreen(
                 }
             } else {
                 items(files, key = { it.id }) { file ->
-                    val resolvable = viewModel.isResolvable(file)
+                    val failed = viewModel.isResolvable(file)
                     val conflict = file.remoteFileId?.let { conflicts[it] }
                     FileIndexRow(
                         file = file,
-                        errorText = if (resolvable) {
+                        errorText = if (failed) {
                             taskErrors[file.relativePath]?.let { TaskPresentation.errorText(it) } ?: "同步失败"
                         } else {
                             null
                         },
-                        resolvable = resolvable,
-                        resolving = resolvingFileId == file.id.toString(),
+                        failed = failed,
                         conflict = conflict,
                         conflictBusy = conflict != null && conflictResolvingId == conflict.conflictId,
                         onResolveConflict = { resolution ->
                             conflict?.let { conflictPending = it to resolution }
                         },
-                        onClick = file.remoteFileId?.let { { onOpenVersions(it) } },
-                        onKeepLocal = { resolveChoice = file to FileResolveAction.KEEP_LOCAL },
-                        onKeepCloud = { resolveChoice = file to FileResolveAction.KEEP_CLOUD },
-                        onDeleteBoth = { resolveChoice = file to FileResolveAction.DELETE_BOTH }
+                        onOpenFailure = { viewModel.openFailureDetail(file) },
+                        onClick = file.remoteFileId?.let { { onOpenVersions(it) } }
                     )
                 }
             }
@@ -160,36 +161,14 @@ fun MappingFilesScreen(
         SnackbarHost(hostState = snackbarHostState)
     }
 
-    resolveChoice?.let { (file, action) ->
-        ConfirmBottomSheet(
-            title = when (action) {
-                FileResolveAction.KEEP_LOCAL -> "保留本地版本"
-                FileResolveAction.KEEP_CLOUD -> "保留云端版本"
-                FileResolveAction.DELETE_BOTH -> "删除两端文件"
-            },
-            message = buildString {
-                append(file.fileName)
-                append('\n')
-                append(file.relativePath)
-                append("\n\n")
-                when (action) {
-                    FileResolveAction.KEEP_LOCAL ->
-                        append("确认后将以本地内容覆盖云端同名文件，保持两端严格一致。")
-                    FileResolveAction.KEEP_CLOUD ->
-                        append("确认后本地当前文件将移入应用回收站，随后重新下载云端版本，保持两端严格一致。")
-                    FileResolveAction.DELETE_BOTH ->
-                        append("确认后本地文件将移入应用回收站，云端文件一并删除，其他设备会同步移除该文件。")
-                }
-            },
-            confirmText = when (action) {
-                FileResolveAction.DELETE_BOTH -> "确认删除"
-                else -> "确认保留"
-            },
-            onConfirm = {
-                viewModel.resolveFile(file, action)
-                resolveChoice = null
-            },
-            onDismiss = { resolveChoice = null }
+    failureDetail?.let { detail ->
+        FailureDetailSheet(
+            detail = detail,
+            busy = resolvingFileId == detail.file.id.toString(),
+            onKeepLocal = { viewModel.resolveFile(detail.file, FileResolveAction.KEEP_LOCAL) },
+            onKeepCloud = { viewModel.resolveFile(detail.file, FileResolveAction.KEEP_CLOUD) },
+            onDeleteBoth = { viewModel.resolveFile(detail.file, FileResolveAction.DELETE_BOTH) },
+            onDismiss = { viewModel.closeFailureDetail() }
         )
     }
 
@@ -219,15 +198,12 @@ fun MappingFilesScreen(
 private fun FileIndexRow(
     file: LocalFileIndex,
     errorText: String?,
-    resolvable: Boolean,
-    resolving: Boolean,
+    failed: Boolean,
     conflict: ConflictDto?,
     conflictBusy: Boolean,
     onResolveConflict: (String) -> Unit,
-    onClick: (() -> Unit)?,
-    onKeepLocal: () -> Unit,
-    onKeepCloud: () -> Unit,
-    onDeleteBoth: () -> Unit
+    onOpenFailure: () -> Unit,
+    onClick: (() -> Unit)?
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -248,7 +224,14 @@ private fun FileIndexRow(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                FileStatusChip(file.status)
+                if (failed) {
+                    // 点击「同步失败」标签打开失败详情与处理弹层
+                    Box(modifier = Modifier.clickable(onClick = onOpenFailure)) {
+                        FileStatusChip(file.status)
+                    }
+                } else {
+                    FileStatusChip(file.status)
+                }
             }
             Text(
                 text = file.relativePath,
@@ -293,23 +276,120 @@ private fun FileIndexRow(
                     Spacer(Modifier.weight(1f))
                 }
             }
-            if (resolvable) {
+        }
+    }
+}
+
+/** 同步失败详情弹层：云端/本地文件信息 + 本地/云端/删除处理。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FailureDetailSheet(
+    detail: FailureDetailUi,
+    busy: Boolean,
+    onKeepLocal: () -> Unit,
+    onKeepCloud: () -> Unit,
+    onDeleteBoth: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(
+                text = detail.file.fileName,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = detail.file.relativePath,
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            Spacer(Modifier.height(12.dp))
+            if (detail.loading) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 20.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                }
+            } else {
+                val info = detail.info
+                DetailInfoRow(
+                    label = "云端文件",
+                    value = when {
+                        info?.cloud != null -> {
+                            val created = info.cloud.createdAtIso?.let { " · ${formatIsoTime(it)}" } ?: ""
+                            "${formatFileSize(info.cloud.size)} · 版本 v${info.cloud.version}$created"
+                        }
+                        info?.cloudError != null -> "加载失败：${info.cloudError}"
+                        else -> "云端暂无文件"
+                    }
+                )
+                DetailInfoRow(
+                    label = "本地文件",
+                    value = if (info?.localSize != null) {
+                        "${formatFileSize(info.localSize)} · ${formatModifiedAt(info.localModifiedAt ?: 0L)}"
+                    } else {
+                        "本地文件不存在"
+                    }
+                )
+                Spacer(Modifier.height(8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = onKeepLocal, enabled = !resolving) {
+                    TextButton(onClick = onKeepLocal, enabled = !busy) {
                         Text("本地", color = PrimaryBlue)
                     }
-                    TextButton(onClick = onKeepCloud, enabled = !resolving) {
-                        Text("云端", color = PrimaryBlue)
+                    TextButton(onClick = onKeepCloud, enabled = !busy && info?.cloud != null) {
+                        Text("云端", color = if (info?.cloud != null) PrimaryBlue else OnSurfaceMuted)
                     }
-                    TextButton(onClick = onDeleteBoth, enabled = !resolving) {
+                    TextButton(onClick = onDeleteBoth, enabled = !busy) {
                         Text("删除", color = ErrorRed)
+                    }
+                    if (busy) {
+                        Spacer(Modifier.width(8.dp))
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     }
                     Spacer(Modifier.weight(1f))
                 }
+                Text(
+                    text = "本地＝以本地内容覆盖/上传云端；云端＝移走本地文件后重新下载云端；删除＝两端都删除。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OnSurfaceMuted,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun DetailInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = OnSurfaceMuted,
+            modifier = Modifier.width(72.dp)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f)
+        )
     }
 }

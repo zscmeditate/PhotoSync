@@ -13,7 +13,12 @@ import {
   validationError,
   versionConflict,
 } from '../src/lib/errors';
-import { StorageObjectMissingError, type ObjectContent, type ObjectStore } from '../src/lib/object-store';
+import {
+  RangeNotSatisfiableError,
+  StorageObjectMissingError,
+  type ObjectContent,
+  type ObjectStore,
+} from '../src/lib/object-store';
 import type {
   DeviceRecord,
   DeviceRepository,
@@ -657,10 +662,27 @@ export class FakeObjectStore implements ObjectStore {
     this.objects.set(objectId, Buffer.alloc(0));
   }
 
-  async getObject(objectId: string): Promise<ObjectContent> {
+  async getObject(objectId: string, range?: string): Promise<ObjectContent> {
     const object = this.objects.get(objectId);
     if (!object) {
       throw new StorageObjectMissingError(objectId);
+    }
+    if (range) {
+      const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+      if (!match) {
+        throw new RangeNotSatisfiableError(objectId);
+      }
+      const start = Number(match[1]);
+      const end = match[2] ? Number(match[2]) : object.byteLength - 1;
+      if (object.byteLength > 0 && start >= object.byteLength) {
+        throw new RangeNotSatisfiableError(objectId);
+      }
+      const slice = object.subarray(start, Math.min(end + 1, object.byteLength));
+      return {
+        body: Readable.from([slice]),
+        contentLength: slice.byteLength,
+        contentRange: `bytes ${start}-${Math.min(end, object.byteLength - 1)}/${object.byteLength}`,
+      };
     }
     return { body: Readable.from([object]), contentLength: object.byteLength };
   }
