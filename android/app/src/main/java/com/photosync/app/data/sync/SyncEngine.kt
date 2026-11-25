@@ -159,9 +159,11 @@ class SyncEngine(
                 val newIndex = repository.files(mapping.id)
                 // 新绑定/重新绑定的映射先与远端清单核对，已存在的相同文件直接建立关联，
                 // 并以关联后的索引作为差异基线，避免把相同文件重复规划为上传。
+                // 判定依据是索引中没有任何远端关联，而不是扫描前索引为空：
+                // 绑定目录时界面会先本地扫描一次，扫描前索引已非空。
                 var baseline = oldIndex
                 var current = newIndex
-                val freshlyBound = oldIndex.isEmpty() && newIndex.isNotEmpty()
+                val freshlyBound = needsRemoteReconcile(newIndex)
                 if (freshlyBound) {
                     when (reconcileFreshMapping(mapping, newIndex)) {
                         SyncRunResult.RETRY -> {

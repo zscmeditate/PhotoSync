@@ -519,9 +519,12 @@ class SyncRepository(
                 val remote = remoteByPath[local.relativePath] ?: continue
                 val localSha = local.sha256
                 val remoteSha = remote.sha256
-                if (localSha.isNullOrBlank() || remoteSha.isNullOrBlank()) continue
                 if (local.size != remote.size) continue
-                if (!localSha.equals(remoteSha, ignoreCase = true)) continue
+                // 扫描器对超大文件跳过哈希（sha 为空），此时只能按路径 + 大小认定同一文件；
+                // 否则重装/重绑后这些文件会被当成新文件重复上传，最终报「远端已存在同名文件」。
+                if (!localSha.isNullOrBlank() && !remoteSha.isNullOrBlank() &&
+                    !localSha.equals(remoteSha, ignoreCase = true)
+                ) continue
                 fileDao.upsert(
                     local.copy(
                         status = FileSyncStatus.SYNCED,

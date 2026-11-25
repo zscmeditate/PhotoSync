@@ -239,6 +239,17 @@ private fun LocalFileIndex.resetRemoteBinding(): LocalFileIndex = copy(
 )
 
 /**
+ * 索引中没有任何文件关联到远端时，说明该映射还没有与云端的对应关系
+ * （新绑定目录，或卸载重装后本地库被清空、重新绑定）。
+ * 此时必须先与远端清单核对，把同名同内容的云端文件直接建立关联，避免整库重复上传。
+ *
+ * 注意不能只看「扫描前索引为空」：绑定目录时界面会先本地扫描一次，
+ * 索引里已经写满待上传记录但都还没有 remoteFileId。
+ */
+fun needsRemoteReconcile(files: List<LocalFileIndex>): Boolean =
+    files.isNotEmpty() && files.none { !it.remoteFileId.isNullOrBlank() }
+
+/**
  * 比较扫描前的索引快照与扫描后的索引，产出需要执行的本地变更。
  * 仅对状态为 SYNCED 且有 remoteFileId 的文件感知修改/删除；本地仅有文件由 UploadNew 覆盖。
  * 重命名通过内容（sha256 + size）唯一配对识别，配对不唯一时回退为删除 + 新增上传。
