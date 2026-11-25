@@ -1,6 +1,7 @@
 package com.photosync.app.data.repository
 
 import android.net.Uri
+import android.util.Log
 import androidx.room.withTransaction
 import com.photosync.app.data.local.LocalFileIndex
 import com.photosync.app.data.local.LocalFolderMapping
@@ -32,6 +33,7 @@ import com.photosync.app.data.sync.FolderAccessException
 import com.photosync.app.data.sync.FolderScanProgress
 import com.photosync.app.data.sync.FolderScanner
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -168,22 +170,28 @@ class SpaceRepository(
             if (local?.coverPath != null && spaceCoverStore.isCached(dto.id, version)) {
                 return@forEach
             }
-            val bytes = try {
-                val response = apiClient.api.getSpaceCover(dto.id, deviceId)
-                if (!response.isSuccessful) {
-                    null
-                } else {
-                    response.body()?.use { body ->
-                        body.bytes().takeIf { it.isNotEmpty() && it.size <= MAX_COVER_BYTES }
+            Log.d(TAG, "syncCover ${dto.id.take(8)} version=$version localPath=${local?.coverPath}")
+            val bytes = withContext(Dispatchers.IO) {
+                try {
+                    val response = apiClient.api.getSpaceCover(dto.id, deviceId)
+                    Log.d(TAG, "syncCover ${dto.id.take(8)} http=${response.code()}")
+                    if (!response.isSuccessful) {
+                        null
+                    } else {
+                        response.body()?.use { body ->
+                            body.bytes().takeIf { it.isNotEmpty() && it.size <= MAX_COVER_BYTES }
+                        }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "syncCover ${dto.id.take(8)} 下载失败", e)
+                    null
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                null
             }
             if (bytes == null) return@forEach
             val path = spaceCoverStore.saveBytes(dto.id, version, bytes) ?: return@forEach
+            Log.d(TAG, "syncCover ${dto.id.take(8)} 已缓存 ${bytes.size} bytes")
             spaceDao.updateCover(dto.id, path, version)
         }
     }
@@ -794,6 +802,7 @@ class SpaceRepository(
     )
 
     private companion object {
+        const val TAG = "SpaceRepository"
         const val MAX_MANIFEST_FILES = 10_000
         /** 服务端限制头像 3MB，客户端再留一点余量防止异常响应。 */
         const val MAX_COVER_BYTES = 4 * 1024 * 1024

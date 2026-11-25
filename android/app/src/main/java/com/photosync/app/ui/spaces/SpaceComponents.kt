@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -63,6 +62,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -120,7 +121,7 @@ fun SpacePageHeader(
     }
 }
 
-/** 空间头像：有自定义照片时显示圆形缩略图，否则沿用默认文件夹图标。 */
+/** 空间头像：有自定义照片时显示圆角矩形缩略图，否则沿用默认文件夹图标。 */
 @Composable
 private fun SpaceAvatar(coverPath: String?, size: Int) {
     val bitmap = remember(coverPath) {
@@ -135,7 +136,7 @@ private fun SpaceAvatar(coverPath: String?, size: Int) {
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(size.dp)
-                .clip(CircleShape)
+                .clip(RoundedCornerShape(12.dp))
         )
     } else {
         IconBadge(icon = Icons.Filled.Folder, size = size)
@@ -177,6 +178,7 @@ fun SpaceCard(
                             text = space.name,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
@@ -472,12 +474,14 @@ private fun RoleBadge(role: String) {
     Text(
         text = text,
         fontSize = 11.sp,
+        lineHeight = 12.sp,
+        style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
         color = PrimaryBlue,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
             .background(PrimaryBlue.copy(alpha = 0.10f))
-            .padding(horizontal = 6.dp, vertical = 2.dp)
+            .padding(horizontal = 6.dp, vertical = 1.dp)
     )
 }
 

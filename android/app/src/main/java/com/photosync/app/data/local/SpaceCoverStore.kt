@@ -3,12 +3,16 @@ package com.photosync.app.data.local
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
 
 /**
  * 空间头像本地缓存：头像统一由服务端保存，本机只缓存用于列表展示的小图。
@@ -21,12 +25,27 @@ class SpaceCoverStore(context: Context) {
 
     /** 把用户选中的照片压缩成适合上传/展示的 JPEG 字节（最长边不超过 [MAX_COVER_PX]）。 */
     suspend fun compressFromUri(uri: Uri): ByteArray? = withContext(Dispatchers.IO) {
-        val bitmap = decodeScaled(uri) ?: return@withContext null
+        // 相册/照片选择器返回的 Uri 只保证短暂可读，先一次性读出字节，避免多次打开流失败。
+        val source = readAllBytes(uri)
+        if (source == null || source.isEmpty()) {
+            Log.w(TAG, "读取所选照片失败: $uri")
+            return@withContext null
+        }
+        val bitmap = decodeSampled(source)
+        if (bitmap == null) {
+            Log.w(TAG, "解码所选照片失败（${source.size} bytes）: $uri")
+            return@withContext null
+        }
         try {
             ByteArrayOutputStream().use { out ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 88, out)
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 88, out)) {
+                    return@withContext null
+                }
                 out.toByteArray()
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "压缩所选照片失败", e)
+            null
         } finally {
             bitmap.recycle()
         }
@@ -40,6 +59,7 @@ class SpaceCoverStore(context: Context) {
             try {
                 FileOutputStream(target).use { it.write(bytes) }
             } catch (e: Exception) {
+                Log.w(TAG, "写入头像缓存失败", e)
                 target.delete()
                 return@withContext null
             }
@@ -65,22 +85,50 @@ class SpaceCoverStore(context: Context) {
             ?.forEach { it.delete() }
     }
 
-    private fun decodeScaled(uri: Uri): Bitmap? {
+    private fun readAllBytes(uri: Uri): ByteArray? = try {
+        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+    } catch (e: Exception) {
+        Log.w(TAG, "打开照片数据流失败", e)
+        null
+    }
+
+    /** 先按采样解码；BitmapFactory 不支持的格式（如部分 HEIF）再用 ImageDecoder 兜底。 */
+    private fun decodeSampled(bytes: ByteArray): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, bounds)
-        } ?: return null
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         val longest = maxOf(bounds.outWidth, bounds.outHeight)
-        if (longest <= 0) return null
         var sample = 1
-        while (longest / sample > MAX_COVER_PX) sample *= 2
+        while (longest > 0 && longest / sample > MAX_COVER_PX) sample *= 2
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
-        return context.contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, options)
+        val decoded = try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        } catch (e: Exception) {
+            Log.w(TAG, "BitmapFactory 解码失败", e)
+            null
+        }
+        if (decoded != null) return decoded
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+        return try {
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(bytes))) { decoder, info, _ ->
+                val side = maxOf(info.size.width, info.size.height)
+                if (side > MAX_COVER_PX) {
+                    val scale = MAX_COVER_PX.toFloat() / side
+                    decoder.setTargetSize(
+                        (info.size.width * scale).toInt().coerceAtLeast(1),
+                        (info.size.height * scale).toInt().coerceAtLeast(1)
+                    )
+                }
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "ImageDecoder 解码失败", e)
+            null
         }
     }
 
     private companion object {
+        const val TAG = "SpaceCoverStore"
+
         /** 头像只在列表中显示，512px 足够，同时控制上传与存储体积。 */
         const val MAX_COVER_PX = 512
     }
