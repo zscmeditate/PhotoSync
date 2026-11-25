@@ -246,8 +246,14 @@ private fun LocalFileIndex.resetRemoteBinding(): LocalFileIndex = copy(
  * 注意不能只看「扫描前索引为空」：绑定目录时界面会先本地扫描一次，
  * 索引里已经写满待上传记录但都还没有 remoteFileId。
  */
-fun needsRemoteReconcile(files: List<LocalFileIndex>): Boolean =
-    files.isNotEmpty() && files.none { !it.remoteFileId.isNullOrBlank() }
+fun needsRemoteReconcile(files: List<LocalFileIndex>): Boolean {
+    if (files.isEmpty()) return false
+    // 一条远端关联都没有：新绑定或重装后重新绑定
+    if (files.none { !it.remoteFileId.isNullOrBlank() }) return true
+    // 已有部分关联，但仍存在从未关联成功的失败行（如旧版本上传撞「远端已存在同名文件」后重扫保留了 SYNC_ERROR）：
+    // 重新与云端清单核对，内容一致的直接采纳，避免这些文件永久卡在同步失败。
+    return files.any { it.remoteFileId.isNullOrBlank() && it.status == FileSyncStatus.SYNC_ERROR }
+}
 
 /**
  * 比较扫描前的索引快照与扫描后的索引，产出需要执行的本地变更。

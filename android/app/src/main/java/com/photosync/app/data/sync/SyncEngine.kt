@@ -2134,19 +2134,18 @@ class SyncEngine(
         }
         if (response.code() == 416) {
             // 服务器无法满足续传区间（临时文件与云端版本不匹配）：交回 SafFileStore 清空从头下载
-            response.raw().close()
+            response.errorBody()?.close()
             return DownloadChunk(ByteArrayInputStream(ByteArray(0)), 416, null)
         }
         if (!response.isSuccessful) {
             val detail = parseErrorMessage(response.errorBody())
-            response.raw().close()
             throw DownloadRequestFailureException(
                 ApiResult.Failure(detail?.code, detail?.message ?: "请求失败（HTTP ${response.code()}）")
             )
         }
         val body = response.body()
         if (body == null) {
-            response.raw().close()
+            response.errorBody()?.close()
             throw DownloadRequestFailureException(ApiResult.Failure("DOWNLOAD_EMPTY_BODY", "下载响应缺少内容"))
         }
         return DownloadChunk(

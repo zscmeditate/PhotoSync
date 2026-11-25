@@ -69,26 +69,40 @@ class SyncPlanningTest {
 
     @Test
     fun needsRemoteReconcile_onlyWhenNoFileIsBoundToRemote() {
-        fun file(path: String, fileId: String?) = LocalFileIndex(
-            id = 0,
-            mappingId = "m",
-            relativePath = path,
-            fileName = path,
-            size = 1,
-            modifiedAt = 0,
-            sha256 = "s",
-            docUri = "",
-            status = if (fileId == null) FileSyncStatus.PENDING_UPLOAD else FileSyncStatus.SYNCED,
-            lastScannedAt = 0,
-            remoteFileId = fileId,
-            remoteVersion = null
-        )
+        fun file(
+            path: String,
+            fileId: String?,
+            status: String = if (fileId == null) FileSyncStatus.PENDING_UPLOAD else FileSyncStatus.SYNCED
+        ) =
+            LocalFileIndex(
+                id = 0,
+                mappingId = "m",
+                relativePath = path,
+                fileName = path,
+                size = 1,
+                modifiedAt = 0,
+                sha256 = "s",
+                docUri = "",
+                status = status,
+                lastScannedAt = 0,
+                remoteFileId = fileId,
+                remoteVersion = null
+            )
 
         assertFalse(needsRemoteReconcile(emptyList()))
         // 重装/重新绑定后绑定目录时已先扫描一次：索引非空但没有任何远端关联
         assertTrue(needsRemoteReconcile(listOf(file("a.jpg", null), file("b.jpg", null))))
         // 已有部分远端关联属于正常增量同步，不再整体核对
         assertFalse(needsRemoteReconcile(listOf(file("a.jpg", "f1"), file("b.jpg", null))))
+        // 存在未关联且已失败的旧记录：需要重新核对，内容一致时直接采纳
+        assertTrue(
+            needsRemoteReconcile(
+                listOf(
+                    file("a.jpg", "f1"),
+                    file("b.jpg", null, FileSyncStatus.SYNC_ERROR)
+                )
+            )
+        )
     }
 
     @Test
