@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
 import androidx.navigation.NavHostController
 import com.photosync.app.BuildConfig
 import com.photosync.app.PhotoSyncApp
@@ -252,24 +253,25 @@ private fun HomeOverviewTab(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
     ) {
-        // 顶部标题
-        Column(modifier = Modifier.padding(vertical = 12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "同步精灵",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = BuildConfig.VERSION_NAME,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+        // 顶部标题（统一标题行高度 48dp，与带图标按钮的 Tab 页一致）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+                .height(48.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "同步精灵",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = BuildConfig.VERSION_NAME,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         // 总览状态卡片（灰底 + 绿色勾选，设计图样式）
@@ -278,7 +280,7 @@ private fun HomeOverviewTab(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(14.dp),
+                .padding(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
@@ -329,7 +331,7 @@ private fun HomeOverviewTab(
         }
 
         // 统计卡片（设计图：两列灰底小卡）
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatCard(
                 icon = Icons.Filled.Folder,
@@ -345,7 +347,7 @@ private fun HomeOverviewTab(
             )
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionHeader(
                 title = "我的同步空间",
@@ -375,23 +377,32 @@ private fun HomeOverviewTab(
                 )
             }
         } else {
-            spaces.take(3).forEach { space ->
+            spaces.take(3).forEachIndexed { index, space ->
+                if (index > 0) {
+                    Spacer(Modifier.height(8.dp))
+                }
                 SpaceCard(
                     space = space,
                     hasError = space.id in abnormalSpaceIds,
                     showParticipants = false,
                     onClick = { onOpenSpace(space.id) }
                 )
-                Spacer(Modifier.height(10.dp))
             }
         }
 
-        Spacer(Modifier.height(16.dp))
-        SectionHeader(
-            title = "最近活动",
-            actionText = "查看全部",
-            onAction = onOpenActivity
-        )
+        Spacer(Modifier.height(10.dp))
+        // 48dp 行高与"我的同步空间"标题行一致，保证两段标题文字起始高度相同
+        Row(
+            modifier = Modifier.height(48.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SectionHeader(
+                title = "最近活动",
+                actionText = "查看全部",
+                onAction = onOpenActivity,
+                modifier = Modifier.weight(1f)
+            )
+        }
         val app = LocalContext.current.applicationContext as PhotoSyncApp
         val recentTasks by app.container.syncRepository.observeRecentTasks(3)
             .collectAsStateWithLifecycle(initialValue = emptyList())
@@ -449,7 +460,7 @@ private fun HomeOverviewTab(
                 }
             }
         }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(16.dp))
     }
 }
 

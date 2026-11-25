@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.remote.ApiResult
 import com.photosync.app.data.repository.BindOutcome
-import com.photosync.app.data.repository.ScanPreview
 import com.photosync.app.data.repository.SpaceRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -25,7 +24,8 @@ data class AddMappingUiState(
     val scannedCount: Int = 0,
     val currentFileName: String = "",
     val createdMappingId: String? = null,
-    val preview: ScanPreview? = null,
+    /** 绑定与首次扫描完成，界面应立即返回空间页。 */
+    val bindCompleted: Boolean = false,
     /** 本机还不是成员：目录已选择并提交加入申请，等待主设备同意。 */
     val joinSubmitted: Boolean = false,
     val error: String? = null
@@ -102,9 +102,10 @@ class AddMappingViewModel(
                                 )
                             }) {
                                 is ApiResult.Success -> {
+                                    // 不再展示首次同步预览，扫描完成直接返回空间页
                                     _state.value = _state.value.copy(
                                         scanning = false,
-                                        preview = scan.data
+                                        bindCompleted = true
                                     )
                                 }
                                 is ApiResult.Failure -> {
@@ -113,7 +114,7 @@ class AddMappingViewModel(
                                     _state.value = _state.value.copy(
                                         scanning = false,
                                         error = if (localScanCompleted) {
-                                            "目录已添加，本地扫描完成，但差异预览失败：${scan.message}"
+                                            "目录已添加，本地扫描完成，但差异计算失败：${scan.message}"
                                         } else {
                                             "目录已添加，但扫描失败：${scan.message}。旧索引（如有）已保留。"
                                         }

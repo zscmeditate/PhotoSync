@@ -21,11 +21,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.HourglassEmpty
-import androidx.compose.material.icons.filled.SyncProblem
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -36,11 +33,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -50,15 +46,12 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photosync.app.PhotoSyncApp
-import com.photosync.app.data.repository.ScanPreview
 import com.photosync.app.ui.components.ErrorBanner
 import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SecondaryButton
-import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 import com.photosync.app.ui.theme.SuccessGreen
-import com.photosync.app.ui.theme.WarningOrange
 
 @Composable
 fun AddMappingScreen(
@@ -111,8 +104,9 @@ fun AddMappingScreen(
                 state.joinSubmitted -> {
                     JoinPendingContent(onDone = onFinished)
                 }
-                state.preview != null -> {
-                    ScanPreviewContent(preview = state.preview!!, onDone = onFinished)
+                state.bindCompleted -> {
+                    // 绑定与首次扫描完成，自动返回空间页
+                    LaunchedEffect(Unit) { onFinished() }
                 }
                 state.scanning -> {
                     Spacer(Modifier.height(48.dp))
@@ -267,64 +261,6 @@ private fun ColumnScope.JoinPendingContent(onDone: () -> Unit) {
     )
     Spacer(Modifier.height(24.dp))
     PrimaryButton(text = "返回空间详情", onClick = onDone, leadingIcon = Icons.Filled.CheckCircle)
-}
-
-@Composable
-private fun ColumnScope.ScanPreviewContent(preview: ScanPreview, onDone: () -> Unit) {
-    Spacer(Modifier.height(12.dp))
-    Icon(
-        imageVector = Icons.Filled.CheckCircle,
-        contentDescription = null,
-        tint = SuccessGreen,
-        modifier = Modifier.size(56.dp).align(Alignment.CenterHorizontally)
-    )
-    Text(
-        text = "首次同步预览",
-        style = MaterialTheme.typography.headlineMedium,
-        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 12.dp)
-    )
-    Text(
-        text = "本地 ${preview.totalLocalCount} 项 · 远端 ${preview.summary.remoteCount} 项",
-        color = OnSurfaceMuted,
-        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp)
-    )
-    Spacer(Modifier.height(24.dp))
-    PreviewCountRow("将上传", preview.summary.toUpload, Icons.Filled.CloudUpload, PrimaryBlue)
-    Spacer(Modifier.height(12.dp))
-    PreviewCountRow("将下载", preview.summary.toDownload, Icons.Filled.CloudDownload, PrimaryBlue)
-    Spacer(Modifier.height(12.dp))
-    PreviewCountRow("冲突", preview.summary.conflictCount, Icons.Filled.SyncProblem, WarningOrange)
-    if (preview.truncated) {
-        Spacer(Modifier.height(16.dp))
-        ErrorBanner(message = "清单过长已截断，仅上报前 10000 条；服务端不会据此判定完整差异")
-    } else if (!preview.summary.diffComplete) {
-        Spacer(Modifier.height(16.dp))
-        Text("服务端返回的差异尚不完整，请稍后重新扫描。", color = ErrorRed)
-    }
-    Spacer(Modifier.height(20.dp))
-    Text(
-        text = "实际上传下载将在 Phase 3 开放。本阶段仅保存目录映射、本地文件索引和差异预览。",
-        style = MaterialTheme.typography.bodyMedium,
-        color = OnSurfaceMuted
-    )
-    Spacer(Modifier.height(24.dp))
-    PrimaryButton(text = "完成", onClick = onDone, leadingIcon = Icons.Filled.CheckCircle)
-}
-
-@Composable
-private fun PreviewCountRow(label: String, count: Int, icon: ImageVector, color: Color) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = color.copy(alpha = 0.10f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(modifier = Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = null, tint = color)
-            Spacer(Modifier.size(12.dp))
-            Text(label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            Text("$count 项", style = MaterialTheme.typography.titleLarge, color = color, fontWeight = FontWeight.Bold)
-        }
-    }
 }
 
 /** 把 SAF 的 tree URI 转成可读路径展示，中文与空格保持原样（仅用于显示，不改动存储）。 */

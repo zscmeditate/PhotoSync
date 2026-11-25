@@ -86,7 +86,12 @@ fun SpacePageHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = if (onBack == null) 20.dp else 4.dp, vertical = 8.dp),
+            .padding(
+                start = if (onBack == null) 20.dp else 4.dp,
+                end = if (onBack == null) 20.dp else 4.dp,
+                bottom = 12.dp
+            )
+            .height(48.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (onBack != null) {

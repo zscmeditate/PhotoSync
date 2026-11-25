@@ -100,7 +100,8 @@ fun DeviceListScreen() {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
+                    .height(48.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -157,7 +158,7 @@ fun DeviceListScreen() {
                     LazyColumn(
                         modifier = Modifier.weight(1f),
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                            start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp
+                            start = 20.dp, end = 20.dp, top = 0.dp, bottom = 12.dp
                         ),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
