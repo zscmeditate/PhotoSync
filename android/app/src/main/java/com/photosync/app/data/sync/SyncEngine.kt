@@ -762,12 +762,14 @@ class SyncEngine(
                 since = previous
             }
 
-            // 阶段二：先为所有对象事件预建持久化下载任务（不执行），
-            // 任务中心因此能完整列出待下载清单与剩余数量。
+            // 阶段二：先为所有对象事件预建持久化下载任务、为删除事件预建 DELETE 标记任务
+            // （均不执行），任务中心因此能一次列出整批待下载/待删除清单与剩余数量，
+            // 而不是执行一条才冒出一条。
             for (event in events) {
                 val payload = event.payload ?: continue
-                if (event.type in OBJECT_EVENT_TYPES) {
-                    planObjectEventTask(spaceId, deviceId, rules, event, payload)
+                when (event.type) {
+                    in OBJECT_EVENT_TYPES -> planObjectEventTask(spaceId, deviceId, rules, event, payload)
+                    "file_deleted" -> planDeleteEventTask(spaceId, deviceId, rules, event, payload)
                 }
             }
 
@@ -872,6 +874,39 @@ class SyncEngine(
                 size = DecimalContract.long(sizeRaw, "event.payload.size"),
                 sha256 = expectedSha256,
                 revision = event.revision
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 预建失败不阻断同步：执行阶段会按原逻辑重建任务并正确上报错误。
+        }
+    }
+
+    /**
+     * 规划阶段：为 file_deleted 预建 DELETE 标记任务，只落库不执行。
+     * 跳过条件与 applyRemoteDelete 保持一致；执行阶段按 (spaceId, eventRevision)
+     * 复用同一任务并直接完成，因此任务中心能一次列出整批待删除记录。
+     */
+    private suspend fun planDeleteEventTask(
+        spaceId: String,
+        deviceId: String,
+        mappings: List<SyncMappingRule>,
+        event: SyncEventDto,
+        payload: SyncEventPayloadDto
+    ) {
+        try {
+            if (event.deviceId == deviceId) return
+            val fileId = payload.fileId
+            if (fileId.isNullOrBlank()) return
+            if (repository.taskForEvent(spaceId, event.revision) != null) return
+            if (mappings.isEmpty()) return
+            val plan = RemoteDownloadPlanner.plan(payload.relativePath ?: "", mappings) ?: return
+            val mapping = repository.mapping(plan.mappingId) ?: return
+            if (mapping.spaceId != spaceId || mapping.status != MappingStatus.ACTIVE) return
+            val oldIndex = repository.file(mapping.id, plan.localRelativePath)
+            repository.getOrCreateEventMarkerTask(
+                spaceId, mapping.id, plan.localRelativePath, plan.remoteRelativePath,
+                fileId, event.revision, SyncTaskType.DELETE, size = oldIndex?.size ?: 0L
             )
         } catch (e: CancellationException) {
             throw e
@@ -1235,9 +1270,14 @@ class SyncEngine(
             if (existingTask?.state == SyncTaskState.COMPLETED) return SyncRunResult.SUCCESS
             val relativePath = payload.relativePath ?: return SyncRunResult.FAILURE
             val plan = RemoteDownloadPlanner.plan(relativePath, mappings)
-                ?: return SyncRunResult.SUCCESS
+            if (plan == null) {
+                settleSkippedEventTask(spaceId, event.revision)
+                return SyncRunResult.SUCCESS
+            }
             val mapping = repository.mapping(plan.mappingId)
             if (mapping == null || mapping.spaceId != spaceId || mapping.status != MappingStatus.ACTIVE) {
+                // 规划阶段可能已预建 DELETE 任务，这里跳过事件时一并收尾，避免留下永远等待的幽灵任务。
+                settleSkippedEventTask(spaceId, event.revision)
                 return SyncRunResult.SUCCESS
             }
             val oldIndex = repository.file(mapping.id, plan.localRelativePath)
