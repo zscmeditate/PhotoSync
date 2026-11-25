@@ -3,6 +3,7 @@ package com.photosync.app.data.sync
 import com.photosync.app.data.local.FileSyncStatus
 import com.photosync.app.data.local.LocalFileIndex
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -127,16 +128,20 @@ class LocalChangeDetectorTest {
     }
 
     @Test
-    fun bulkDeleteOverThreshold_isSuppressed() {
+    fun bulkDeleteChanges_areAllReportedForConfirmation() {
+        // 批量删除由 BulkDeletionPolicy 在落库阶段决定是否需要确认，检测阶段如实返回全部删除
         val old = (1..3).map { index("d$it.jpg", remoteFileId = "f$it", remoteVersion = 1) }
-        val changes = LocalChangeDetector.detect(old, emptyList(), maxAutoDeletions = 2)
-        assertEquals(0, changes.count { it is LocalChange.Delete })
+        val changes = LocalChangeDetector.detect(old, emptyList())
+        assertEquals(3, changes.count { it is LocalChange.Delete })
     }
 
     @Test
-    fun bulkDeleteAtThreshold_isAllowed() {
-        val old = (1..3).map { index("d$it.jpg", remoteFileId = "f$it", remoteVersion = 1) }
-        val changes = LocalChangeDetector.detect(old, emptyList(), maxAutoDeletions = 3)
-        assertEquals(3, changes.count { it is LocalChange.Delete })
+    fun bulkDeleteOverThreshold_requiresConfirmation() {
+        assertTrue(BulkDeletionPolicy.requiresConfirmation(3, maxAutoDeletions = 2))
+    }
+
+    @Test
+    fun bulkDeleteAtThreshold_doesNotRequireConfirmation() {
+        assertFalse(BulkDeletionPolicy.requiresConfirmation(3, maxAutoDeletions = 3))
     }
 }

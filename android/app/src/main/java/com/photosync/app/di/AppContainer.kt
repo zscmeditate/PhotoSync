@@ -2,6 +2,10 @@ package com.photosync.app.di
 
 import android.content.Context
 import androidx.room.Room
+import com.photosync.app.data.local.MIGRATION_1_2
+import com.photosync.app.data.local.MIGRATION_2_3
+import com.photosync.app.data.local.MIGRATION_3_4
+import com.photosync.app.data.local.SpaceCoverStore
 import com.photosync.app.data.local.SyncDatabase
 import com.photosync.app.data.prefs.PendingBindingStore
 import com.photosync.app.data.prefs.SecureTokenStore
@@ -31,12 +35,15 @@ class AppContainer(context: Context) {
 
     val pendingBindingStore = PendingBindingStore(context)
 
+    val spaceCoverStore = SpaceCoverStore(context)
+
     val database: SyncDatabase = Room.databaseBuilder(
         context.applicationContext,
         SyncDatabase::class.java,
         "photosync.db"
     )
-        // 数据库为基线版本，结构变化时直接重建（旧版本库自动清空，避免旧数据干扰）
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        // 未命中迁移的结构变化直接重建（旧版本库自动清空，避免旧数据干扰）
         .fallbackToDestructiveMigration()
         .build()
 
@@ -53,7 +60,8 @@ class AppContainer(context: Context) {
         tokenStore = secureTokenStore,
         database = database,
         folderScanner = FolderScanner(context.applicationContext),
-        pendingBindingStore = pendingBindingStore
+        pendingBindingStore = pendingBindingStore,
+        spaceCoverStore = spaceCoverStore
     )
 
     val syncRepository = SyncRepository(

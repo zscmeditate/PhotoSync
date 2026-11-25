@@ -181,7 +181,7 @@ const conflictRoutes: FastifyPluginAsync<ConflictRoutesOptions> = async (app, op
         body.resolution,
         body.operationId,
       );
-      opts.hub?.publish(result.conflict.spaceId, BigInt(result.event.revision));
+      opts.hub?.publish(result.conflict.spaceId, BigInt(result.event.revision), body.deviceId);
       return result;
     },
   );

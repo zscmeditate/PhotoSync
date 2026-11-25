@@ -255,6 +255,7 @@ export class PrismaSpaceRepository implements SpaceRepository {
       ownerId: space.ownerId,
       name: space.name,
       description: space.description,
+      coverUpdatedAt: space.coverUpdatedAt,
       revision: space.revision,
       createdAt: space.createdAt,
       updatedAt: space.updatedAt,
@@ -319,6 +320,48 @@ export class PrismaSpaceRepository implements SpaceRepository {
       include: { _count: { select: { members: true, folderMappings: true } } },
     });
     return this.withCounts(space);
+  }
+
+  async setCover(
+    spaceId: string,
+    data: { image: Buffer; contentType: string },
+  ): Promise<SpaceWithCountsRecord> {
+    const space = await this.prisma.syncSpace.update({
+      where: { id: spaceId },
+      data: {
+        coverImage: data.image,
+        coverContentType: data.contentType,
+        coverUpdatedAt: new Date(),
+      },
+      include: { _count: { select: { members: true, folderMappings: true } } },
+    });
+    return this.withCounts(space);
+  }
+
+  async clearCover(spaceId: string): Promise<SpaceWithCountsRecord> {
+    const space = await this.prisma.syncSpace.update({
+      where: { id: spaceId },
+      data: { coverImage: null, coverContentType: null, coverUpdatedAt: null },
+      include: { _count: { select: { members: true, folderMappings: true } } },
+    });
+    return this.withCounts(space);
+  }
+
+  async findCover(
+    spaceId: string,
+  ): Promise<{ image: Buffer; contentType: string; updatedAt: Date } | null> {
+    const space = await this.prisma.syncSpace.findUnique({
+      where: { id: spaceId },
+      select: { coverImage: true, coverContentType: true, coverUpdatedAt: true },
+    });
+    if (!space?.coverImage || !space.coverUpdatedAt) {
+      return null;
+    }
+    return {
+      image: Buffer.from(space.coverImage),
+      contentType: space.coverContentType ?? 'image/jpeg',
+      updatedAt: space.coverUpdatedAt,
+    };
   }
 
   async delete(spaceId: string): Promise<void> {

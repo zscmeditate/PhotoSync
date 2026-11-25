@@ -7,6 +7,8 @@
 export interface RealtimeConnection {
   readonly id: string;
   readonly userId: string;
+  /** 订阅时登记的设备 ID，用于把推送排除给触发操作的那台设备。 */
+  deviceId?: string;
   send(message: string): void;
   isOpen(): boolean;
 }
@@ -21,7 +23,8 @@ export class RealtimeHub {
   private readonly rooms = new Map<string, Set<RealtimeConnection>>();
   private readonly subscriptions = new Map<string, Set<string>>();
 
-  subscribe(connection: RealtimeConnection, spaceId: string): void {
+  subscribe(connection: RealtimeConnection, spaceId: string, deviceId?: string): void {
+    if (deviceId) connection.deviceId = deviceId;
     let room = this.rooms.get(spaceId);
     if (!room) {
       room = new Set();
@@ -55,7 +58,12 @@ export class RealtimeHub {
     this.subscriptions.delete(connection.id);
   }
 
-  publish(spaceId: string, revision: bigint): void {
+  /**
+   * 广播 revision 提示。
+   * @param excludeDeviceId 触发本次操作的设备 ID：自己提交的变更不需要再通知自己，
+   *   否则该设备会为每条上传/删除提示各排一次完整同步，形成长时间的状态抖动。
+   */
+  publish(spaceId: string, revision: bigint, excludeDeviceId?: string): void {
     const room = this.rooms.get(spaceId);
     if (!room || room.size === 0) return;
     const message = JSON.stringify({
@@ -65,6 +73,7 @@ export class RealtimeHub {
     } as RevisionNotification);
     for (const connection of room) {
       try {
+        if (excludeDeviceId && connection.deviceId === excludeDeviceId) continue;
         if (connection.isOpen()) connection.send(message);
       } catch {
         // 单个连接写入失败不影响其他连接

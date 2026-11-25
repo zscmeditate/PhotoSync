@@ -66,8 +66,9 @@ fun RegisterScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     var displayName by rememberSaveable { mutableStateOf("") }
-    var email by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    // 测试用：预填测试账号，方便直接点“注册并进入”
+    var email by rememberSaveable { mutableStateOf("zscmeditate@126.com") }
+    var password by rememberSaveable { mutableStateOf("813927lightsky") }
     var deviceName by rememberSaveable { mutableStateOf(app.container.deviceName) }
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
 
@@ -86,7 +87,7 @@ fun RegisterScreen(
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(88.dp))
         Box(
             modifier = Modifier
                 .size(72.dp)

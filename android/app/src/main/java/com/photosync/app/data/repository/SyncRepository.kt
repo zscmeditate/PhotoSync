@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.photosync.app.data.local.FileSyncStatus
 import com.photosync.app.data.local.LocalFileIndex
 import com.photosync.app.data.local.LocalFolderMapping
+import com.photosync.app.data.local.LocalPendingDeletion
 import com.photosync.app.data.local.LocalSyncCursor
 import com.photosync.app.data.local.LocalSyncTask
 import com.photosync.app.data.local.LocalSyncTaskDao
@@ -16,6 +17,7 @@ import com.photosync.app.data.prefs.SecureTokenStore
 import com.photosync.app.data.remote.ApiClient
 import com.photosync.app.data.remote.ApiResult
 import com.photosync.app.data.remote.RemoteFileDto
+import com.photosync.app.data.sync.BulkDeletionPolicy
 import com.photosync.app.data.sync.FolderScanProgress
 import com.photosync.app.data.sync.LocalChange
 import com.photosync.app.data.sync.LocalChangeDetector
@@ -36,6 +38,7 @@ class SyncRepository(
     private val fileDao = database.localFileIndexDao()
     private val taskDao = database.localSyncTaskDao()
     private val cursorDao = database.localSyncCursorDao()
+    private val pendingDeletionDao = database.localPendingDeletionDao()
 
     fun observeStats(spaceId: String): Flow<SyncTaskStats> = taskDao.observeStats(spaceId)
 
@@ -286,6 +289,32 @@ class SyncRepository(
                 }
             }
             val now = System.currentTimeMillis()
+            // 批量删除保护：删除数超过阈值时不静默丢弃，而是记录为「待确认删除」，
+            // 由用户在空间详情二次确认后再删除云端；期间也不会被兜底补齐重新下载。
+            val deletions = changes.filterIsInstance<LocalChange.Delete>()
+            val pendingBulkDelete = BulkDeletionPolicy.requiresConfirmation(deletions.size)
+            // 文件在本地重新出现（用户把移走的文件放回来了）时，撤销对应的待确认删除。
+            val newPathSet = newIndex.mapTo(mutableSetOf()) { it.relativePath }
+            val restoredPendingPaths = pendingDeletionDao.pathsByMapping(mapping.id)
+                .filter { it in newPathSet }
+            if (restoredPendingPaths.isNotEmpty()) {
+                pendingDeletionDao.deleteByPaths(mapping.id, restoredPendingPaths)
+            }
+            if (pendingBulkDelete) {
+                pendingDeletionDao.upsertAll(
+                    deletions.map { change ->
+                        LocalPendingDeletion(
+                            mappingId = mapping.id,
+                            spaceId = spaceId,
+                            relativePath = change.relativePath,
+                            fileId = change.fileId,
+                            baseVersion = change.baseVersion,
+                            size = change.size,
+                            detectedAt = now
+                        )
+                    }
+                )
+            }
             val coveredPaths = mutableSetOf<String>()
             for (change in changes) {
                 when (change) {
@@ -305,6 +334,8 @@ class SyncRepository(
                         )
                     }
                     is LocalChange.Delete -> {
+                        // 批量删除已转入待确认，本轮不提交删除任务。
+                        if (pendingBulkDelete) continue
                         coveredPaths.add(change.relativePath)
                         enqueueMutationTask(
                             spaceId, mapping, SyncTaskType.DELETE,
@@ -338,6 +369,60 @@ class SyncRepository(
                 )
             }
             cancelTasksForVanishedFiles(spaceId, mapping, oldIndex, newIndex, changes, coveredPaths)
+        }
+    }
+
+    /** 空间详情：待用户确认的批量删除数量。 */
+    fun observePendingDeletionCount(spaceId: String): Flow<Int> =
+        pendingDeletionDao.observeCount(spaceId)
+
+    /** 待确认删除的路径：兜底补齐远端文件时必须跳过，避免刚移走的文件又被下载回来。 */
+    suspend fun pendingDeletionPaths(spaceId: String): List<String> =
+        pendingDeletionDao.pathsBySpace(spaceId)
+
+    /** 用户确认批量删除：把待确认记录转成带确认标记的 DELETE 任务，并清空记录。 */
+    suspend fun confirmPendingDeletions(spaceId: String) {
+        database.withTransaction {
+            val items = pendingDeletionDao.getBySpace(spaceId)
+            val now = System.currentTimeMillis()
+            for (item in items) {
+                val mapping = mappingDao.getById(item.mappingId) ?: continue
+                enqueueMutationTask(
+                    spaceId, mapping, SyncTaskType.DELETE,
+                    localPath = item.relativePath, remotePath = item.relativePath,
+                    fileId = item.fileId, baseVersion = item.baseVersion,
+                    size = item.size, oldLocalRelativePath = null, now,
+                    confirmed = true
+                )
+            }
+            pendingDeletionDao.deleteBySpace(spaceId)
+        }
+    }
+
+    /** 用户选择保留云端文件：放弃这批待确认删除，下次同步会把它们重新下载回本地。 */
+    suspend fun cancelPendingDeletions(spaceId: String) = pendingDeletionDao.deleteBySpace(spaceId)
+
+    /**
+     * 服务端批量删除阈值要求确认时，把该删除任务转为待确认记录，
+     * 避免失败任务长期占位、也避免文件被兜底补齐重新下载。
+     */
+    suspend fun recordPendingDeletion(task: LocalSyncTask) {
+        val fileId = task.fileId ?: return
+        database.withTransaction {
+            pendingDeletionDao.upsertAll(
+                listOf(
+                    LocalPendingDeletion(
+                        mappingId = task.mappingId,
+                        spaceId = task.spaceId,
+                        relativePath = task.remoteRelativePath,
+                        fileId = fileId,
+                        baseVersion = task.baseVersion ?: 1,
+                        size = task.size,
+                        detectedAt = System.currentTimeMillis()
+                    )
+                )
+            )
+            taskDao.cancelTask(task.id)
         }
     }
 
@@ -481,7 +566,8 @@ class SyncRepository(
         baseVersion: Int,
         size: Long,
         oldLocalRelativePath: String?,
-        now: Long
+        now: Long,
+        confirmed: Boolean = false
     ) {
         if (taskDao.countActiveTasks(spaceId, mapping.id, remotePath) > 0) return
         val task = LocalSyncTask(
@@ -496,6 +582,7 @@ class SyncRepository(
             size = size,
             baseVersion = baseVersion,
             oldLocalRelativePath = oldLocalRelativePath,
+            confirmed = confirmed,
             operationId = "",
             createdAt = now,
             updatedAt = now

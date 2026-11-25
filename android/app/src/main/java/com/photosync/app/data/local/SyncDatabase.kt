@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.photosync.app.data.sync.dedupeRemoteBindings
 import kotlinx.coroutines.flow.Flow
 
@@ -40,6 +42,13 @@ interface LocalDeviceDao {
 
     @Query("DELETE FROM local_devices")
     suspend fun clear()
+
+    /** 同一事务内整体替换设备缓存，避免先清空再写入导致列表瞬间变空闪烁。 */
+    @Transaction
+    suspend fun replaceAll(devices: List<LocalDevice>) {
+        clear()
+        upsertAll(devices)
+    }
 }
 
 @Entity(tableName = "local_spaces")
@@ -54,7 +63,11 @@ data class LocalSpace(
     val mappingCount: Int,
     val createdAt: String?,
     val updatedAt: String?,
-    val lastSyncedAt: String?
+    val lastSyncedAt: String?,
+    /** 本机为该空间选择的头像照片（应用私有目录内的文件路径），未设置为 null。 */
+    val coverPath: String? = null,
+    /** 头像对应的服务端版本（coverUpdatedAt），用于判断是否需要重新下载。 */
+    val coverVersion: String? = null
 )
 
 @Dao
@@ -76,6 +89,9 @@ interface LocalSpaceDao {
 
     @Query("UPDATE local_spaces SET mappingCount = MAX(0, mappingCount + :delta) WHERE id = :spaceId")
     suspend fun adjustMappingCount(spaceId: String, delta: Int)
+
+    @Query("UPDATE local_spaces SET coverPath = :path, coverVersion = :version WHERE id = :spaceId")
+    suspend fun updateCover(spaceId: String, path: String?, version: String?)
 
     @Query("DELETE FROM local_spaces WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -109,6 +125,9 @@ data class LocalFolderMapping(
 )
 
 data class MappingFileCount(val mappingId: String, val fileCount: Int, val totalSize: Long)
+
+/** 某个空间在本机的文件总数（按其下所有本地目录映射的索引统计）。 */
+data class SpaceFileCount(val spaceId: String, val fileCount: Int)
 
 @Dao
 interface LocalFolderMappingDao {
@@ -159,6 +178,63 @@ interface LocalFolderMappingDao {
         """
     )
     fun observeFileCounts(spaceId: String, deviceId: String): Flow<List<MappingFileCount>>
+
+    @Query(
+        """
+        SELECT m.spaceId AS spaceId, COUNT(f.id) AS fileCount
+        FROM local_folder_mappings m
+        LEFT JOIN local_file_index f ON f.mappingId = m.id
+        WHERE m.deviceId = :deviceId
+        GROUP BY m.spaceId
+        """
+    )
+    fun observeFileCountsBySpace(deviceId: String): Flow<List<SpaceFileCount>>
+}
+
+/**
+ * 本地批量删除待确认记录：单次扫描删除数超过保护阈值时，先不向云端传播删除，
+ * 而是把这批文件记录在这里（同时阻止兜底补齐逻辑把它们重新下载回来），等用户二次确认。
+ */
+@Entity(
+    tableName = "local_pending_deletions",
+    primaryKeys = ["mappingId", "relativePath"],
+    indices = [Index("spaceId")]
+)
+data class LocalPendingDeletion(
+    val mappingId: String,
+    val spaceId: String,
+    val relativePath: String,
+    val fileId: String,
+    val baseVersion: Int,
+    val size: Long,
+    val detectedAt: Long
+)
+
+@Dao
+interface LocalPendingDeletionDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<LocalPendingDeletion>)
+
+    @Query("SELECT * FROM local_pending_deletions WHERE spaceId = :spaceId ORDER BY relativePath ASC")
+    suspend fun getBySpace(spaceId: String): List<LocalPendingDeletion>
+
+    @Query("SELECT relativePath FROM local_pending_deletions WHERE spaceId = :spaceId")
+    suspend fun pathsBySpace(spaceId: String): List<String>
+
+    @Query("SELECT relativePath FROM local_pending_deletions WHERE mappingId = :mappingId")
+    suspend fun pathsByMapping(mappingId: String): List<String>
+
+    @Query("SELECT COUNT(*) FROM local_pending_deletions WHERE spaceId = :spaceId")
+    fun observeCount(spaceId: String): Flow<Int>
+
+    @Query("DELETE FROM local_pending_deletions WHERE spaceId = :spaceId")
+    suspend fun deleteBySpace(spaceId: String)
+
+    @Query("DELETE FROM local_pending_deletions WHERE mappingId = :mappingId")
+    suspend fun deleteByMapping(mappingId: String)
+
+    @Query("DELETE FROM local_pending_deletions WHERE mappingId = :mappingId AND relativePath IN (:paths)")
+    suspend fun deleteByPaths(mappingId: String, paths: List<String>)
 }
 
 object FileSyncStatus {
@@ -240,10 +316,11 @@ interface LocalFileIndexDao {
         LocalFolderMapping::class,
         LocalFileIndex::class,
         LocalSyncTask::class,
-        LocalSyncCursor::class
+        LocalSyncCursor::class,
+        LocalPendingDeletion::class
     ],
     // 基线版本：历史迁移已合并，后续结构变化从 1 开始新增迁移
-    version = 1,
+    version = 4,
     exportSchema = false
 )
 abstract class SyncDatabase : RoomDatabase() {
@@ -253,4 +330,44 @@ abstract class SyncDatabase : RoomDatabase() {
     abstract fun localFileIndexDao(): LocalFileIndexDao
     abstract fun localSyncTaskDao(): LocalSyncTaskDao
     abstract fun localSyncCursorDao(): LocalSyncCursorDao
+    abstract fun localPendingDeletionDao(): LocalPendingDeletionDao
+}
+
+/** v1 -> v2：空间支持本机自定义头像，只新增可空的本地文件路径列。 */
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE local_spaces ADD COLUMN coverPath TEXT")
+    }
+}
+
+/** v2 -> v3：头像改为服务端存储，新增服务端版本号用于差量刷新。 */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE local_spaces ADD COLUMN coverVersion TEXT")
+    }
+}
+
+/** v3 -> v4：批量删除需要用户二次确认，新增待确认记录表与任务确认标记。 */
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `local_pending_deletions` (
+                `mappingId` TEXT NOT NULL,
+                `spaceId` TEXT NOT NULL,
+                `relativePath` TEXT NOT NULL,
+                `fileId` TEXT NOT NULL,
+                `baseVersion` INTEGER NOT NULL,
+                `size` INTEGER NOT NULL,
+                `detectedAt` INTEGER NOT NULL,
+                PRIMARY KEY(`mappingId`, `relativePath`)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_local_pending_deletions_spaceId` " +
+                "ON `local_pending_deletions` (`spaceId`)"
+        )
+        db.execSQL("ALTER TABLE local_sync_tasks ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0")
+    }
 }

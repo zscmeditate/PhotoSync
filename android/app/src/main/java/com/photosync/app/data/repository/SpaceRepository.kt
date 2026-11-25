@@ -1,11 +1,13 @@
 package com.photosync.app.data.repository
 
+import android.net.Uri
 import androidx.room.withTransaction
 import com.photosync.app.data.local.LocalFileIndex
 import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.local.LocalSpace
 import com.photosync.app.data.local.MappingFileCount
 import com.photosync.app.data.local.MappingStatus
+import com.photosync.app.data.local.SpaceCoverStore
 import com.photosync.app.data.local.SyncDatabase
 import com.photosync.app.data.prefs.PendingBinding
 import com.photosync.app.data.prefs.PendingBindingStore
@@ -34,6 +36,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.time.Instant
 
 data class ScanPreview(
@@ -54,13 +58,15 @@ class SpaceRepository(
     private val tokenStore: SecureTokenStore,
     private val database: SyncDatabase,
     private val folderScanner: FolderScanner,
-    private val pendingBindingStore: PendingBindingStore
+    private val pendingBindingStore: PendingBindingStore,
+    private val spaceCoverStore: SpaceCoverStore
 ) {
     private val spaceDao = database.localSpaceDao()
     private val mappingDao = database.localFolderMappingDao()
     private val fileDao = database.localFileIndexDao()
     private val syncTaskDao = database.localSyncTaskDao()
     private val syncCursorDao = database.localSyncCursorDao()
+    private val pendingDeletionDao = database.localPendingDeletionDao()
 
     /** 全部空间：包含本机尚未加入（role=none）的空间，同步空间列表用于展示并申请加入 */
     val allSpaces: Flow<List<LocalSpace>> = spaceDao.observeAll()
@@ -84,9 +90,103 @@ class SpaceRepository(
     fun observeFileCounts(spaceId: String): Flow<List<MappingFileCount>> =
         mappingDao.observeFileCounts(spaceId, currentDeviceId().orEmpty())
 
+    /** 本机各空间的文件总数（按本机目录映射的本地索引统计），用于空间列表名称后展示。 */
+    fun observeSpaceFileCounts(): Flow<Map<String, Int>> =
+        mappingDao.observeFileCountsBySpace(currentDeviceId().orEmpty())
+            .map { counts -> counts.associate { it.spaceId to it.fileCount } }
+
     fun currentDeviceId(): String? = tokenStore.currentDeviceId()
 
     suspend fun getSpace(spaceId: String): LocalSpace? = spaceDao.getById(spaceId)
+
+    /**
+     * 管理员为该空间设置头像：先在客户端压缩，再上传到服务端，
+     * 成功后立即用返回的版本号缓存到本机（其他设备下次刷新空间列表时自动拉取）。
+     */
+    suspend fun uploadSpaceCover(spaceId: String, uri: Uri): ApiResult<Unit> {
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        val bytes = spaceCoverStore.compressFromUri(uri)
+            ?: return ApiResult.Failure("IMAGE_READ_FAILED", "照片读取失败，请换一张试试")
+        return when (
+            val result = apiCall {
+                apiClient.api.uploadSpaceCover(
+                    spaceId,
+                    deviceId,
+                    "image/jpeg",
+                    bytes.toRequestBody("image/jpeg".toMediaType())
+                )
+            }
+        ) {
+            is ApiResult.Success -> {
+                val dto = result.data.space
+                spaceDao.upsertAll(listOf(dto.toLocal(spaceDao.getById(spaceId))))
+                dto.coverUpdatedAt?.let { version ->
+                    spaceCoverStore.saveBytes(spaceId, version, bytes)?.let { path ->
+                        spaceDao.updateCover(spaceId, path, version)
+                    }
+                }
+                ApiResult.Success(Unit)
+            }
+            is ApiResult.Failure -> result
+        }
+    }
+
+    /** 管理员移除空间头像；清掉本机缓存，其他设备刷新后恢复默认图标。 */
+    suspend fun removeSpaceCover(spaceId: String): ApiResult<Unit> {
+        val deviceId = currentDeviceId()
+            ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
+        return when (val result = apiCall { apiClient.api.deleteSpaceCover(spaceId, deviceId) }) {
+            is ApiResult.Success -> {
+                spaceDao.upsertAll(
+                    listOf(result.data.space.toLocal(spaceDao.getById(spaceId)))
+                )
+                spaceDao.updateCover(spaceId, null, null)
+                spaceCoverStore.delete(spaceId)
+                ApiResult.Success(Unit)
+            }
+            is ApiResult.Failure -> result
+        }
+    }
+
+    /**
+     * 按服务端版本号同步各空间头像：
+     * 有新版本才下载并缓存，管理员清除头像后同步清掉本机文件与展示。
+     */
+    private suspend fun syncSpaceCovers(remoteSpaces: List<SpaceDto>) {
+        val deviceId = currentDeviceId()
+        remoteSpaces.forEach { dto ->
+            val version = dto.coverUpdatedAt
+            if (version == null) {
+                if (spaceDao.getById(dto.id)?.coverPath != null) {
+                    spaceDao.updateCover(dto.id, null, null)
+                }
+                spaceCoverStore.delete(dto.id)
+                return@forEach
+            }
+            val local = spaceDao.getById(dto.id)
+            if (local?.coverPath != null && spaceCoverStore.isCached(dto.id, version)) {
+                return@forEach
+            }
+            val bytes = try {
+                val response = apiClient.api.getSpaceCover(dto.id, deviceId)
+                if (!response.isSuccessful) {
+                    null
+                } else {
+                    response.body()?.use { body ->
+                        body.bytes().takeIf { it.isNotEmpty() && it.size <= MAX_COVER_BYTES }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (bytes == null) return@forEach
+            val path = spaceCoverStore.saveBytes(dto.id, version, bytes) ?: return@forEach
+            spaceDao.updateCover(dto.id, path, version)
+        }
+    }
 
     suspend fun getAllSpaces(): List<LocalSpace> = spaceDao.getAll()
 
@@ -115,6 +215,8 @@ class SpaceRepository(
                 }
                 // 空间列表更新后尝试恢复本机在服务端记录的目录绑定（重装/重新登录场景）
                 restoreDeviceMappings()
+                // 拉取管理员设置的空间头像（按版本号增量下载）
+                syncSpaceCovers(remoteSpaces)
                 ApiResult.Success(Unit)
             }
             is ApiResult.Failure -> result
@@ -167,6 +269,7 @@ class SpaceRepository(
                     mappingDao.deleteBySpaceId(spaceId)
                     spaceDao.deleteById(spaceId)
                 }
+                spaceCoverStore.delete(spaceId)
                 ApiResult.Success(Unit)
             }
             is ApiResult.Failure -> result
@@ -203,6 +306,7 @@ class SpaceRepository(
                         .forEach { stale ->
                             fileDao.clearByMapping(stale.id)
                             syncTaskDao.deleteByMapping(stale.id)
+                            pendingDeletionDao.deleteByMapping(stale.id)
                             mappingDao.deleteById(stale.id)
                         }
                     result.data.mappings.forEach { remote ->
@@ -245,6 +349,7 @@ class SpaceRepository(
                         }
                         syncTaskDao.deleteBySpace(spaceId)
                         syncCursorDao.deleteBySpace(spaceId)
+                        pendingDeletionDao.deleteBySpace(spaceId)
                     }
                     pendingBindingStore.clear(spaceId)
                 }
@@ -669,7 +774,9 @@ class SpaceRepository(
         mappingCount = mappingCount,
         createdAt = createdAt,
         updatedAt = updatedAt,
-        lastSyncedAt = existing?.lastSyncedAt
+        lastSyncedAt = existing?.lastSyncedAt,
+        coverPath = existing?.coverPath,
+        coverVersion = coverUpdatedAt
     )
 
     private fun MappingDto.toLocal(existing: LocalFolderMapping?) = LocalFolderMapping(
@@ -688,5 +795,7 @@ class SpaceRepository(
 
     private companion object {
         const val MAX_MANIFEST_FILES = 10_000
+        /** 服务端限制头像 3MB，客户端再留一点余量防止异常响应。 */
+        const val MAX_COVER_BYTES = 4 * 1024 * 1024
     }
 }

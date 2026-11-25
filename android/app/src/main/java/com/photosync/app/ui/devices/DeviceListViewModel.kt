@@ -34,7 +34,8 @@ class DeviceListViewModel(
     val devices: StateFlow<List<LocalDevice>> = deviceRepository.devices
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    private val _uiState = MutableStateFlow<DeviceListUiState>(DeviceListUiState.Loading)
+    // 进入设备页不自动刷新：直接展示本地缓存，避免切 Tab 时列表闪一下；需要最新数据时手动刷新。
+    private val _uiState = MutableStateFlow<DeviceListUiState>(DeviceListUiState.Ready)
     val uiState: StateFlow<DeviceListUiState> = _uiState.asStateFlow()
 
     private val _messages = MutableSharedFlow<String>()
@@ -42,10 +43,6 @@ class DeviceListViewModel(
 
     private val _actionInProgress = MutableStateFlow(false)
     val actionInProgress: StateFlow<Boolean> = _actionInProgress.asStateFlow()
-
-    init {
-        refresh()
-    }
 
     fun refresh() {
         viewModelScope.launch {

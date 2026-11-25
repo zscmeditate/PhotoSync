@@ -33,8 +33,7 @@ class DeviceRepository(
     suspend fun refreshDevices(): ApiResult<Unit> {
         return when (val result = apiCall { apiClient.api.getDevices() }) {
             is ApiResult.Success -> {
-                localDeviceDao.clear()
-                localDeviceDao.upsertAll(result.data.devices.map { it.toLocal() })
+                localDeviceDao.replaceAll(result.data.devices.map { it.toLocal() })
                 ApiResult.Success(Unit)
             }
             is ApiResult.Failure -> result

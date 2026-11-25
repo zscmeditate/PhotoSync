@@ -1,5 +1,6 @@
 package com.photosync.app.ui.spaces
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.photosync.app.data.local.LocalDevice
@@ -42,6 +43,10 @@ class SpaceListViewModel(
 
     val mappings: StateFlow<List<LocalFolderMapping>> = spaceRepository.observeMappingsForCurrentDevice()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 本机各空间的文件数量，空间卡片名称后展示。 */
+    val spaceFileCounts: StateFlow<Map<String, Int>> = spaceRepository.observeSpaceFileCounts()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
@@ -161,6 +166,26 @@ class SpaceListViewModel(
             when (val result = spaceRepository.deleteSpace(spaceId)) {
                 is ApiResult.Success -> _messages.emit("已删除服务器上的整个空间")
                 is ApiResult.Failure -> _messages.emit("删除失败：${result.message}")
+            }
+        }
+    }
+
+    /** 管理员用选中的照片设置空间头像：压缩后上传服务端，所有设备刷新后同步展示。 */
+    fun setSpaceCover(spaceId: String, uri: Uri) {
+        viewModelScope.launch {
+            when (val result = spaceRepository.uploadSpaceCover(spaceId, uri)) {
+                is ApiResult.Success -> _messages.emit("已更新空间头像")
+                is ApiResult.Failure -> _messages.emit("设置头像失败：${result.message}")
+            }
+        }
+    }
+
+    /** 管理员移除空间头像，所有设备恢复默认的文件夹图标。 */
+    fun clearSpaceCover(spaceId: String) {
+        viewModelScope.launch {
+            when (val result = spaceRepository.removeSpaceCover(spaceId)) {
+                is ApiResult.Success -> _messages.emit("已移除空间头像")
+                is ApiResult.Failure -> _messages.emit("移除头像失败：${result.message}")
             }
         }
     }

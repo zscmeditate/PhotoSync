@@ -1,5 +1,6 @@
 package com.photosync.app.data.local
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
@@ -54,6 +55,9 @@ data class LocalSyncTask(
     val error: String? = null,
     val baseVersion: Int? = null,
     val oldLocalRelativePath: String? = null,
+    /** 用户已在「待确认的批量删除」中确认，提交删除时携带 confirmBulkDelete 绕过服务端阈值。 */
+    @ColumnInfo(defaultValue = "0")
+    val confirmed: Boolean = false,
     val createdAt: Long,
     val updatedAt: Long
 )

@@ -443,7 +443,8 @@ describe('Phase 4 WebSocket 实时提示', () => {
       ws.once('error', reject);
     });
 
-    ws.send(JSON.stringify({ type: 'subscribe', spaceId, deviceId: deviceA.id }));
+    // 由 deviceA 提交，deviceB 订阅：推送只发给其他设备
+    ws.send(JSON.stringify({ type: 'subscribe', spaceId, deviceId: deviceB.id }));
     // 给订阅消息一点处理时间
     await new Promise((r) => setTimeout(r, 50));
 
@@ -451,6 +452,28 @@ describe('Phase 4 WebSocket 实时提示', () => {
     await createFile('Camera/a.jpg', Buffer.from('a'), 'upload-a');
     const parsed = JSON.parse(await message);
     expect(parsed).toMatchObject({ type: 'revision', spaceId, revision: '1' });
+
+    ws.close();
+  });
+
+  it('触发提交的设备不会收到自己的 revision 提示', async () => {
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const port = (app.server.address() as AddressInfo).port;
+    const token = jwt.signAccessToken('user-1');
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/ws?token=${token}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+
+    ws.send(JSON.stringify({ type: 'subscribe', spaceId, deviceId: deviceA.id }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const received: string[] = [];
+    ws.on('message', (data) => received.push(data.toString()));
+    await createFile('Camera/a.jpg', Buffer.from('a'), 'upload-a');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(received).toHaveLength(0);
 
     ws.close();
   });
@@ -470,13 +493,13 @@ describe('Phase 4 WebSocket 实时提示', () => {
     await new Promise<void>((resolve) => wsC.once('close', () => resolve()));
     expect(wsC.readyState).toBe(WebSocket.CLOSED);
 
-    // deviceA 订阅，deviceC 的关闭不影响
+    // deviceB 订阅（提交来自 deviceA），deviceC 的关闭不影响
     const wsA = new WebSocket(`ws://127.0.0.1:${port}/api/v1/ws?token=${token}`);
     await new Promise<void>((resolve, reject) => {
       wsA.once('open', () => resolve());
       wsA.once('error', reject);
     });
-    wsA.send(JSON.stringify({ type: 'subscribe', spaceId, deviceId: deviceA.id }));
+    wsA.send(JSON.stringify({ type: 'subscribe', spaceId, deviceId: deviceB.id }));
     await new Promise((r) => setTimeout(r, 50));
     const message = nextMessage(wsA);
     await createFile('Camera/b.jpg', Buffer.from('b'), 'upload-b');

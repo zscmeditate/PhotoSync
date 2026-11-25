@@ -147,7 +147,7 @@ const trashRoutes: FastifyPluginAsync<TrashRoutesOptions> = async (app, opts) =>
         body.deviceId,
         body.operationId,
       );
-      opts.hub?.publish(result.file.spaceId, BigInt(result.event.revision));
+      opts.hub?.publish(result.file.spaceId, BigInt(result.event.revision), body.deviceId);
       return result;
     },
   );

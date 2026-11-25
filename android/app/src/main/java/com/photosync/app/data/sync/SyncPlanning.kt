@@ -247,18 +247,28 @@ fun needsRemoteReconcile(files: List<LocalFileIndex>): Boolean =
     files.isNotEmpty() && files.none { !it.remoteFileId.isNullOrBlank() }
 
 /**
+ * 批量删除保护策略：单次扫描的删除数超过阈值时不再静默丢弃，
+ * 而是先记录为「待确认删除」，由用户在空间详情二次确认后才同步删除云端文件。
+ */
+object BulkDeletionPolicy {
+    /** 单次扫描允许自动提交的最大删除数。 */
+    const val DEFAULT_MAX_AUTO_DELETIONS = 50
+
+    fun requiresConfirmation(
+        deletionCount: Int,
+        maxAutoDeletions: Int = DEFAULT_MAX_AUTO_DELETIONS
+    ): Boolean = deletionCount > maxAutoDeletions
+}
+
+/**
  * 比较扫描前的索引快照与扫描后的索引，产出需要执行的本地变更。
  * 仅对状态为 SYNCED 且有 remoteFileId 的文件感知修改/删除；本地仅有文件由 UploadNew 覆盖。
  * 重命名通过内容（sha256 + size）唯一配对识别，配对不唯一时回退为删除 + 新增上传。
  */
 object LocalChangeDetector {
-    /** 单次扫描允许自动提交的最大删除数；超过视为异常（如外部存储被卸载），不向服务器传播删除。 */
-    const val DEFAULT_MAX_AUTO_DELETIONS = 50
-
     fun detect(
         oldFiles: List<LocalFileIndex>,
-        newFiles: List<LocalFileIndex>,
-        maxAutoDeletions: Int = DEFAULT_MAX_AUTO_DELETIONS
+        newFiles: List<LocalFileIndex>
     ): List<LocalChange> {
         val oldByPath = oldFiles.associateBy { it.relativePath }
         val newByPath = newFiles.associateBy { it.relativePath }
@@ -319,10 +329,8 @@ object LocalChangeDetector {
                 )
             )
         }
-        // 大量删除保护：删除数超过阈值时不提交删除（保留远端文件），避免目录被卸载等误删扩散。
-        if (deletions.size <= maxAutoDeletions) {
-            changes.addAll(deletions)
-        }
+        // 批量删除是否传播由 BulkDeletionPolicy 在落库阶段决定，这里只负责如实识别删除。
+        changes.addAll(deletions)
         for ((path, newFile) in added) {
             changes.add(LocalChange.UploadNew(path, newFile.size, newFile.sha256))
         }

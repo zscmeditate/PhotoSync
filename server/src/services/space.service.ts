@@ -40,6 +40,8 @@ export interface SpaceDto {
   ownerId: string;
   name: string;
   description: string | null;
+  /** 自定义头像最近更新时间（ISO8601）；null 表示管理员尚未设置头像 */
+  coverUpdatedAt: string | null;
   revision: string;
   /** none 表示该设备尚未加入该空间（与 spaceDtoSchema 的枚举一致） */
   role: MemberRoleValue | 'none';
@@ -308,6 +310,52 @@ export class SpaceService {
       ...(data.description !== undefined ? { description: data.description } : {}),
     });
     return this.toSpaceDto(updated, access.role ?? 'admin');
+  }
+
+  /** 管理员为该空间设置头像；图片已由客户端压缩，直接存库供所有设备拉取。 */
+  async setSpaceCover(
+    userId: string,
+    deviceId: string,
+    spaceId: string,
+    image: Buffer,
+    contentType: string,
+  ): Promise<SpaceDto> {
+    const access = await this.requireSpaceAdmin(userId, spaceId, deviceId);
+    const updated = await this.deps.spaces.setCover(spaceId, { image, contentType });
+    return this.toSpaceDto(updated, access);
+  }
+
+  /** 管理员清除空间头像，所有设备恢复默认图标。 */
+  async clearSpaceCover(
+    userId: string,
+    deviceId: string,
+    spaceId: string,
+  ): Promise<SpaceDto> {
+    const access = await this.requireSpaceAdmin(userId, spaceId, deviceId);
+    const updated = await this.deps.spaces.clearCover(spaceId);
+    return this.toSpaceDto(updated, access);
+  }
+
+  /** 读取空间头像字节；仅空间成员可读。未设置时返回 null。 */
+  async getSpaceCover(
+    userId: string,
+    spaceId: string,
+    deviceId?: string,
+  ): Promise<{ image: Buffer; contentType: string; updatedAt: Date } | null> {
+    await this.requireAccess(userId, spaceId, deviceId);
+    return this.deps.spaces.findCover(spaceId);
+  }
+
+  private async requireSpaceAdmin(
+    userId: string,
+    spaceId: string,
+    deviceId: string,
+  ): Promise<MemberRoleValue> {
+    const access = await this.requireAccess(userId, spaceId, deviceId);
+    if (access.role !== 'owner' && access.role !== 'admin') {
+      throw spaceForbidden();
+    }
+    return access.role;
   }
 
   async deleteSpace(
@@ -690,6 +738,7 @@ export class SpaceService {
       ownerId: space.ownerId,
       name: space.name,
       description: space.description,
+      coverUpdatedAt: space.coverUpdatedAt?.toISOString() ?? null,
       revision: space.revision.toString(),
       role,
       memberCount: memberCount ?? counts.memberCount,

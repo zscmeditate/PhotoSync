@@ -39,6 +39,9 @@ class SyncRealtimeClient(
     }
     private var job: Job? = null
 
+    /** 实时提示去抖任务：连续到达的 revision 提示合并成一次同步。 */
+    private var pendingSyncJob: Job? = null
+
     @Volatile
     private var active = false
 
@@ -59,6 +62,23 @@ class SyncRealtimeClient(
         active = false
         job?.cancel()
         job = null
+        pendingSyncJob?.cancel()
+        pendingSyncJob = null
+    }
+
+    /**
+     * 去抖后再排同步：一批上传会连续产生多条 revision 提示，
+     * 若每条都排一次完整同步，会积压上百个任务并让目录状态一直闪。
+     * 这里只保留最后一次提示，静默 [REALTIME_DEBOUNCE_MS] 后触发一次同步。
+     *
+     * 实时提示只代表远端有新变更，因此跳过本地扫描，避免无谓地翻转目录状态。
+     */
+    private fun requestSync() {
+        pendingSyncJob?.cancel()
+        pendingSyncJob = scope.launch {
+            delay(REALTIME_DEBOUNCE_MS)
+            SyncScheduler.enqueue(context, skipLocalScan = true)
+        }
     }
 
     private suspend fun runLoop() {
@@ -100,7 +120,7 @@ class SyncRealtimeClient(
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val hint = runCatching { json.decodeFromString(RevisionHint.serializer(), text) }.getOrNull()
                 if (hint != null && hint.type == "revision" && hint.spaceId.isNotBlank()) {
-                    SyncScheduler.enqueue(context)
+                    requestSync()
                 }
             }
 
@@ -133,4 +153,9 @@ class SyncRealtimeClient(
         val spaceId: String,
         val revision: String? = null
     )
+
+    private companion object {
+        /** 实时提示去抖窗口：窗口内的多条提示只触发一次同步。 */
+        const val REALTIME_DEBOUNCE_MS = 2_000L
+    }
 }

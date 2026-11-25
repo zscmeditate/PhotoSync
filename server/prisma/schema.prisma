@@ -139,6 +139,10 @@ model SyncSpace {
   owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   name        String
   description String?
+  // 空间头像：客户端已压缩的小图（JPEG/PNG/WebP）直接存库，全体设备共用
+  coverImage       Bytes?
+  coverContentType String?
+  coverUpdatedAt   DateTime?
   // 空间内单调递增的事件序号，用于增量拉取
   revision    BigInt   @default(0)
   createdAt   DateTime @default(now())

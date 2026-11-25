@@ -1,5 +1,7 @@
 package com.photosync.app.ui.spaces
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -27,11 +30,14 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.HideImage
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SyncProblem
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,7 +60,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -112,17 +120,42 @@ fun SpacePageHeader(
     }
 }
 
+/** 空间头像：有自定义照片时显示圆形缩略图，否则沿用默认文件夹图标。 */
+@Composable
+private fun SpaceAvatar(coverPath: String?, size: Int) {
+    val bitmap = remember(coverPath) {
+        coverPath?.let { path ->
+            runCatching { BitmapFactory.decodeFile(path) }.getOrNull()
+        }
+    }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = "空间头像",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(size.dp)
+                .clip(CircleShape)
+        )
+    } else {
+        IconBadge(icon = Icons.Filled.Folder, size = size)
+    }
+}
+
 @Composable
 fun SpaceCard(
     space: LocalSpace,
     onClick: () -> Unit,
     hasError: Boolean = false,
+    fileCount: Int? = null,
     members: List<SpaceMemberDto> = emptyList(),
     showParticipants: Boolean = true,
     thisDeviceId: String? = null,
     canManageMembers: Boolean = false,
     onManageMembers: (() -> Unit)? = null,
     onExitSpace: (() -> Unit)? = null,
+    onChangeCover: (() -> Unit)? = null,
+    onRemoveCover: (() -> Unit)? = null,
     onRename: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null
 ) {
@@ -136,7 +169,7 @@ fun SpaceCard(
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconBadge(icon = Icons.Filled.Folder, size = 46)
+                SpaceAvatar(coverPath = space.coverPath, size = 46)
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -148,6 +181,14 @@ fun SpaceCard(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
                         )
+                        if (fileCount != null) {
+                            Text(
+                                text = "（$fileCount）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OnSurfaceMuted,
+                                maxLines = 1
+                            )
+                        }
                         Spacer(Modifier.width(6.dp))
                         RoleBadge(space.role)
                     }
@@ -174,7 +215,7 @@ fun SpaceCard(
                         )
                     }
                 }
-                if (onRename != null || onDelete != null) {
+                if (onChangeCover != null || onRename != null || onDelete != null) {
                     Box {
                         IconButton(onClick = { menuExpanded = true }) {
                             Icon(Icons.Filled.MoreVert, contentDescription = "空间操作")
@@ -190,6 +231,26 @@ fun SpaceCard(
                                     onClick()
                                 }
                             )
+                            if (onChangeCover != null) {
+                                DropdownMenuItem(
+                                    text = { Text(if (space.coverVersion == null) "设置头像" else "更换头像") },
+                                    leadingIcon = { Icon(Icons.Filled.PhotoCamera, contentDescription = null) },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onChangeCover()
+                                    }
+                                )
+                            }
+                            if (onRemoveCover != null && space.coverVersion != null) {
+                                DropdownMenuItem(
+                                    text = { Text("移除头像") },
+                                    leadingIcon = { Icon(Icons.Filled.HideImage, contentDescription = null) },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onRemoveCover()
+                                    }
+                                )
+                            }
                             if (onRename != null) {
                                 DropdownMenuItem(
                                     text = { Text("重命名") },
@@ -648,5 +709,70 @@ private fun DetailInfoRow(label: String, value: String) {
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+/**
+ * 批量删除待确认提示：本地一次移走/删除了过多文件时，先不删除云端，
+ * 由用户确认后再同步删除，避免误删扩散；选择保留则把文件重新下载回本地。
+ */
+@Composable
+fun PendingBulkDeleteCard(
+    count: Int,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onKeep: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = WarningOrange.copy(alpha = 0.12f)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = WarningOrange,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "待确认的批量删除（$count）",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Text(
+                text = "本机有 $count 个文件被移走或删除。超过 50 个的批量删除需确认后才会同步到云端；" +
+                    "确认后删除云端文件，选择保留则不删除云端，并会重新下载回本地。",
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onKeep, enabled = !busy) {
+                    Text(
+                        text = "保留云端",
+                        color = OnSurfaceMuted,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                TextButton(onClick = onConfirm, enabled = !busy) {
+                    Text(
+                        text = if (busy) "处理中…" else "确认删除",
+                        color = ErrorRed,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
     }
 }

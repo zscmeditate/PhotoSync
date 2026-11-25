@@ -71,7 +71,7 @@ const wsRoutes: FastifyPluginAsync<WsRoutesOptions> = async (app, opts) => {
         return;
       }
       if (message.type === 'subscribe') {
-        opts.hub.subscribe(conn, message.spaceId);
+        opts.hub.subscribe(conn, message.spaceId, message.deviceId);
       } else {
         opts.hub.unsubscribe(conn, message.spaceId);
       }

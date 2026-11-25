@@ -108,6 +108,8 @@ export interface SyncSpaceRecord {
   ownerId: string;
   name: string;
   description: string | null;
+  /** 自定义头像最近一次更新时间；null 表示未设置头像 */
+  coverUpdatedAt: Date | null;
   revision: bigint;
   createdAt: Date;
   updatedAt: Date;
@@ -194,6 +196,17 @@ export interface SpaceRepository {
   findById(spaceId: string): Promise<SpaceWithCountsRecord | null>;
   listAccessible(userId: string, deviceIds: string[]): Promise<SpaceWithCountsRecord[]>;
   update(spaceId: string, data: SpaceUpdateData): Promise<SpaceWithCountsRecord>;
+  /** 保存空间头像（图片内容 + MIME 类型），并刷新 coverUpdatedAt。 */
+  setCover(
+    spaceId: string,
+    data: { image: Buffer; contentType: string },
+  ): Promise<SpaceWithCountsRecord>;
+  /** 清除空间头像。 */
+  clearCover(spaceId: string): Promise<SpaceWithCountsRecord>;
+  /** 读取空间头像原始字节；未设置时返回 null。 */
+  findCover(
+    spaceId: string,
+  ): Promise<{ image: Buffer; contentType: string; updatedAt: Date } | null>;
   delete(spaceId: string): Promise<void>;
 
   listMembershipsForDevices(spaceId: string, deviceIds: string[]): Promise<SpaceMemberRecord[]>;

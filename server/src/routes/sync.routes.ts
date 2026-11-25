@@ -149,7 +149,7 @@ const syncRoutes: FastifyPluginAsync<SyncRoutesOptions> = async (app, opts) => {
       const result = await opts.syncService.commitOperation(authUserId(request), spaceId, body);
       // 幂等重放不产生新 revision，无需推送。
       if (!result.duplicate) {
-        opts.hub?.publish(spaceId, BigInt(result.event.revision));
+        opts.hub?.publish(spaceId, BigInt(result.event.revision), body.deviceId);
       }
       return reply.status(result.duplicate ? 200 : 201).send(result);
     },

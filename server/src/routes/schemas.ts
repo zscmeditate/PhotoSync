@@ -117,6 +117,10 @@ export const spaceSchema = {
     ownerId: { type: 'string', description: '所有者用户 UUID' },
     name: { type: 'string' },
     description: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    coverUpdatedAt: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description: '空间头像最近更新时间（ISO8601）；null 表示未设置头像',
+    },
     revision: { type: 'string', description: '十进制事件序号' },
     role: {
       type: 'string',

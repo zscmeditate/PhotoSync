@@ -115,6 +115,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     (_request, body, done) => done(null, body),
   );
 
+  // 空间头像上传：图片原始字节，单个头像限制 3MB（客户端已压缩到 512px）
+  for (const contentType of ['image/jpeg', 'image/png', 'image/webp']) {
+    app.addContentTypeParser(
+      contentType,
+      { parseAs: 'buffer', bodyLimit: 3 * 1024 * 1024 },
+      (_request, body, done) => done(null, body),
+    );
+  }
+
   await app.register(swagger, {
     openapi: {
       openapi: '3.1.0',

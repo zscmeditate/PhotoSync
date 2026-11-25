@@ -106,6 +106,30 @@ interface ApiService {
         @Query("deviceId") deviceId: String
     ): Response<Unit>
 
+    /** 拉取空间头像原始图片（失败或未设置时返回 404） */
+    @Streaming
+    @GET("api/v1/spaces/{spaceId}/cover")
+    suspend fun getSpaceCover(
+        @Path("spaceId") spaceId: String,
+        @Query("deviceId") deviceId: String? = null
+    ): Response<ResponseBody>
+
+    /** 管理员上传空间头像（请求体为压缩后的图片字节） */
+    @PUT("api/v1/spaces/{spaceId}/cover")
+    suspend fun uploadSpaceCover(
+        @Path("spaceId") spaceId: String,
+        @Query("deviceId") deviceId: String,
+        @Header("Content-Type") contentType: String,
+        @Body body: RequestBody
+    ): Response<SpaceResponse>
+
+    /** 管理员移除空间头像 */
+    @DELETE("api/v1/spaces/{spaceId}/cover")
+    suspend fun deleteSpaceCover(
+        @Path("spaceId") spaceId: String,
+        @Query("deviceId") deviceId: String
+    ): Response<SpaceResponse>
+
     @POST("api/v1/spaces/{spaceId}/members")
     suspend fun addSpaceMember(
         @Path("spaceId") spaceId: String,

@@ -29,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -51,6 +52,13 @@ class SyncEngine(
     val phase: StateFlow<String?> = _phase.asStateFlow()
 
     /**
+     * 正在同步的空间 ID 集合（含等待 syncMutex 的排队项）。
+     * 后台同步（启动/周期/列表页）不经过详情的「立即同步」，UI 靠它反映真实同步状态。
+     */
+    private val _syncingSpaceIds = MutableStateFlow<Set<String>>(emptySet())
+    val syncingSpaceIds: StateFlow<Set<String>> = _syncingSpaceIds.asStateFlow()
+
+    /**
      * 串行化同步入口：手动同步、自动同步（WorkManager）与刷新按钮可能同时触发。
      * 若两轮同步并发，扫描写的索引会覆盖另一轮已应用的改名结果，
      * 从而产生「重复下载新文件名」「把旧文件名当新文件上传」等幻影任务。
@@ -66,14 +74,14 @@ class SyncEngine(
      * 远端版本号天然保证顺序：并发上传/下载同一路径时，只有版本匹配的设备能成功；
      * 真正的写冲突（两边同时修改）会在 Phase 5 以路径冲突形式暴露给用户解决。
      */
-    suspend fun syncAll(): SyncRunResult {
+    suspend fun syncAll(skipLocalScan: Boolean = false): SyncRunResult {
         // 不加全局锁，各设备以文件为颗粒度并行同步。
         // 远端文件是幂等的：不同设备不会同时上传同一路径（上传前会校验远端是否已变更），
         // 同一文件的下载/上传也不会互相覆盖——写冲突在路径冲突处理里解决。
         try {
             var result = SyncRunResult.SUCCESS
             for (spaceId in repository.spaceIds()) {
-                when (syncSpace(spaceId)) {
+                when (syncSpace(spaceId, skipLocalScan)) {
                     SyncRunResult.SUCCESS -> Unit
                     SyncRunResult.RETRY -> if (result == SyncRunResult.SUCCESS) result = SyncRunResult.RETRY
                     SyncRunResult.FAILURE -> result = SyncRunResult.FAILURE
@@ -134,9 +142,21 @@ class SyncEngine(
         }
     }
 
-    suspend fun syncSpace(spaceId: String): SyncRunResult = syncMutex.withLock { syncSpaceLocked(spaceId) }
+    /**
+     * @param skipLocalScan true 时只处理远端变更与既有队列任务，不扫描本地目录。
+     *   供实时提示触发的同步使用：这类同步由远端 revision 驱动，本地扫描既无必要，
+     *   还会让目录状态在「扫描中/正常」之间反复翻转。
+     */
+    suspend fun syncSpace(spaceId: String, skipLocalScan: Boolean = false): SyncRunResult {
+        _syncingSpaceIds.update { it + spaceId }
+        try {
+            return syncMutex.withLock { syncSpaceLocked(spaceId, skipLocalScan) }
+        } finally {
+            _syncingSpaceIds.update { it - spaceId }
+        }
+    }
 
-    private suspend fun syncSpaceLocked(spaceId: String): SyncRunResult {
+    private suspend fun syncSpaceLocked(spaceId: String, skipLocalScan: Boolean): SyncRunResult {
         val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
         repository.recoverRunning(spaceId)
         repository.recoverScanning(spaceId)
@@ -145,51 +165,53 @@ class SyncEngine(
         // 否则一次扫描异常会中断整轮同步，队列中的下载任务永远不被执行。
         var planFailed = false
         var planRetry = false
-        for (mapping in mappings) {
-            setPhase("正在扫描本地变更：${mapping.localPathLabel.ifBlank { "本地目录" }}")
-            try {
-                val oldIndex = repository.files(mapping.id)
-                when (val scan = repository.scanMapping(mapping.id)) {
-                    is ApiResult.Failure -> {
-                        planFailed = true
-                        continue
-                    }
-                    is ApiResult.Success -> Unit
-                }
-                val newIndex = repository.files(mapping.id)
-                // 新绑定/重新绑定的映射先与远端清单核对，已存在的相同文件直接建立关联，
-                // 并以关联后的索引作为差异基线，避免把相同文件重复规划为上传。
-                // 判定依据是索引中没有任何远端关联，而不是扫描前索引为空：
-                // 绑定目录时界面会先本地扫描一次，扫描前索引已非空。
-                var baseline = oldIndex
-                var current = newIndex
-                val freshlyBound = needsRemoteReconcile(newIndex)
-                if (freshlyBound) {
-                    when (reconcileFreshMapping(mapping, newIndex)) {
-                        SyncRunResult.RETRY -> {
-                            planRetry = true
+        if (!skipLocalScan) {
+            for (mapping in mappings) {
+                setPhase("正在扫描本地变更：${mapping.localPathLabel.ifBlank { "本地目录" }}")
+                try {
+                    val oldIndex = repository.files(mapping.id)
+                    when (val scan = repository.scanMapping(mapping.id)) {
+                        is ApiResult.Failure -> {
+                            planFailed = true
                             continue
                         }
-                        else -> Unit
+                        is ApiResult.Success -> Unit
                     }
-                    current = repository.files(mapping.id)
-                    baseline = current.filter {
-                        it.status == FileSyncStatus.SYNCED && !it.remoteFileId.isNullOrBlank()
+                    val newIndex = repository.files(mapping.id)
+                    // 新绑定/重新绑定的映射先与远端清单核对，已存在的相同文件直接建立关联，
+                    // 并以关联后的索引作为差异基线，避免把相同文件重复规划为上传。
+                    // 判定依据是索引中没有任何远端关联，而不是扫描前索引为空：
+                    // 绑定目录时界面会先本地扫描一次，扫描前索引已非空。
+                    var baseline = oldIndex
+                    var current = newIndex
+                    val freshlyBound = needsRemoteReconcile(newIndex)
+                    if (freshlyBound) {
+                        when (reconcileFreshMapping(mapping, newIndex)) {
+                            SyncRunResult.RETRY -> {
+                                planRetry = true
+                                continue
+                            }
+                            else -> Unit
+                        }
+                        current = repository.files(mapping.id)
+                        baseline = current.filter {
+                            it.status == FileSyncStatus.SYNCED && !it.remoteFileId.isNullOrBlank()
+                        }
                     }
+                    repository.planAndEnqueueLocalChanges(spaceId, mapping, baseline, current)
+                    // 兜底补齐：云端存在、本地索引缺失且没有未完成任务的文件，补建下载任务。
+                    // 用于修复历史「云端优先」未生成下载任务造成的本地缺失（新建空目录不自动拉全量）。
+                    if (!freshlyBound && current.isNotEmpty()) {
+                        when (reconcileMissingDownloads(mapping, current)) {
+                            SyncRunResult.RETRY -> planRetry = true
+                            else -> Unit
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    planFailed = true
                 }
-                repository.planAndEnqueueLocalChanges(spaceId, mapping, baseline, current)
-                // 兜底补齐：云端存在、本地索引缺失且没有未完成任务的文件，补建下载任务。
-                // 用于修复历史「云端优先」未生成下载任务造成的本地缺失（新建空目录不自动拉全量）。
-                if (!freshlyBound && current.isNotEmpty()) {
-                    when (reconcileMissingDownloads(mapping, current)) {
-                        SyncRunResult.RETRY -> planRetry = true
-                        else -> Unit
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                planFailed = true
             }
         }
 
@@ -315,8 +337,11 @@ class SyncEngine(
         }
         if (remote.isEmpty()) return SyncRunResult.SUCCESS
         val activePaths = repository.activeRemotePaths(mapping.spaceId).toHashSet()
+        // 待确认删除的文件仍存在于云端，但本地已移走，不能再下载回来。
+        val pendingDeletePaths = repository.pendingDeletionPaths(mapping.spaceId).toHashSet()
         for (file in remote) {
             if (file.relativePath in localPaths || file.relativePath in activePaths) continue
+            if (file.relativePath in pendingDeletePaths) continue
             if (file.fileId in localFileIds) continue
             // 补齐下载需要 objectId：按路径取当前生效版本
             val current = when (
@@ -597,7 +622,8 @@ class SyncEngine(
                         uploadId = null,
                         fileId = fileId,
                         baseVersion = baseVersion,
-                        newRelativePath = if (current.type == SyncTaskType.RENAME) current.remoteRelativePath else null
+                        newRelativePath = if (current.type == SyncTaskType.RENAME) current.remoteRelativePath else null,
+                        confirmBulkDelete = current.type == SyncTaskType.DELETE && current.confirmed
                     )
                 )
             }) {
@@ -606,6 +632,13 @@ class SyncEngine(
                     if (current.type == SyncTaskType.DELETE && result.code == "FILE_IS_DELETED") {
                         repository.deleteIndex(mapping.id, current.localRelativePath)
                         repository.completeTask(current)
+                        return SyncRunResult.SUCCESS
+                    }
+                    // 服务端批量删除阈值要求确认：转为「待确认删除」，由用户在空间详情确认后重提。
+                    if (current.type == SyncTaskType.DELETE &&
+                        result.code == "BULK_DELETE_CONFIRMATION_REQUIRED"
+                    ) {
+                        repository.recordPendingDeletion(current)
                         return SyncRunResult.SUCCESS
                     }
                     return mutationRequestFailure(current, result)

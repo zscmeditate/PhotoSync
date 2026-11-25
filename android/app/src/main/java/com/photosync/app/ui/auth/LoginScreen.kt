@@ -71,8 +71,9 @@ fun LoginScreen(
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    var email by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    // 测试用：预填测试账号，方便直接点“登录”
+    var email by rememberSaveable { mutableStateOf("zscmeditate@126.com") }
+    var password by rememberSaveable { mutableStateOf("813927lightsky") }
     var deviceName by rememberSaveable { mutableStateOf(app.container.deviceName) }
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
 
@@ -95,7 +96,7 @@ fun LoginScreen(
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(Modifier.height(48.dp))
+            Spacer(Modifier.height(88.dp))
             AuthHeroBadge()
             Spacer(Modifier.height(16.dp))
             Text(

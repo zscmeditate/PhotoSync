@@ -128,9 +128,12 @@ fun SpaceDetailScreen(
     val detailTask by viewModel.detailTask.collectAsStateWithLifecycle()
     val resolvingTaskId by viewModel.resolvingTaskId.collectAsStateWithLifecycle()
     val syncing by viewModel.syncing.collectAsStateWithLifecycle()
+    val backgroundSyncing by viewModel.backgroundSyncing.collectAsStateWithLifecycle()
     val resolvingAllDuplicateNames by viewModel.resolvingAllDuplicateNames.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
+    val pendingDeletionCount by viewModel.pendingDeletionCount.collectAsStateWithLifecycle()
+    val resolvingBulkDelete by viewModel.resolvingBulkDelete.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var changeTarget by remember { mutableStateOf<LocalFolderMapping?>(null) }
     var showStorage by rememberSaveable { mutableStateOf(false) }
@@ -214,7 +217,7 @@ fun SpaceDetailScreen(
                     // 刷新中/同步中不显示转圈，仅禁用按钮避免重复点击
                     IconButton(
                         onClick = { viewModel.refresh(); viewModel.runQueuedTasks() },
-                        enabled = !loading && !syncing
+                        enabled = !loading && !syncing && !backgroundSyncing
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = "刷新并执行待办任务")
                     }
@@ -260,14 +263,16 @@ fun SpaceDetailScreen(
                         Column {
                             when {
                                 mappings.isNotEmpty() -> {
+                                    // 手动同步与后台同步（启动/周期/列表页）都算忙碌，扫描阶段也包含在内
+                                    val busy = syncing || backgroundSyncing
                                     PrimaryButton(
                                         text = when {
                                             // 按钮只给简洁状态，具体阶段（扫描/上传/下载/应用云端变更）不体现在文案里
-                                            syncing || syncStats.runningTasks > 0 -> "正在同步…"
+                                            busy || syncStats.runningTasks > 0 -> "正在同步…"
                                             else -> "立即同步"
                                         },
                                         onClick = viewModel::syncNow,
-                                        enabled = !syncing && syncStats.runningTasks == 0,
+                                        enabled = !busy && syncStats.runningTasks == 0,
                                         leadingIcon = Icons.Filled.Sync
                                     )
                                     Text(
@@ -279,6 +284,15 @@ fun SpaceDetailScreen(
                                             .fillMaxWidth()
                                             .padding(top = 6.dp)
                                     )
+                                    if (pendingDeletionCount > 0) {
+                                        Spacer(Modifier.height(10.dp))
+                                        PendingBulkDeleteCard(
+                                            count = pendingDeletionCount,
+                                            busy = resolvingBulkDelete || busy,
+                                            onConfirm = viewModel::confirmPendingDeletions,
+                                            onKeep = viewModel::keepPendingDeletionFiles
+                                        )
+                                    }
                                 }
                                 bindingPending -> {
                                     PrimaryButton(

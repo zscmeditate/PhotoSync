@@ -292,6 +292,7 @@ export class FakeSpaceRepository implements SpaceRepository {
       ownerId: data.ownerId,
       name: data.name,
       description: data.description,
+      coverUpdatedAt: null,
       revision: 0n,
       createdAt: now,
       updatedAt: now,
@@ -331,6 +332,11 @@ export class FakeSpaceRepository implements SpaceRepository {
       .map((space) => this.withCounts(space));
   }
 
+  private readonly covers = new Map<
+    string,
+    { image: Buffer; contentType: string; updatedAt: Date }
+  >();
+
   async update(spaceId: string, data: SpaceUpdateData): Promise<SpaceWithCountsRecord> {
     const space = this.spaces.get(spaceId);
     if (!space) {
@@ -339,6 +345,38 @@ export class FakeSpaceRepository implements SpaceRepository {
     const updated = { ...space, ...data, updatedAt: new Date() };
     this.spaces.set(spaceId, updated);
     return this.withCounts(updated);
+  }
+
+  async setCover(
+    spaceId: string,
+    data: { image: Buffer; contentType: string },
+  ): Promise<SpaceWithCountsRecord> {
+    const space = this.spaces.get(spaceId);
+    if (!space) {
+      throw new Error(`space ${spaceId} not found`);
+    }
+    const updatedAt = new Date();
+    this.covers.set(spaceId, { ...data, updatedAt });
+    const updated = { ...space, coverUpdatedAt: updatedAt };
+    this.spaces.set(spaceId, updated);
+    return this.withCounts(updated);
+  }
+
+  async clearCover(spaceId: string): Promise<SpaceWithCountsRecord> {
+    const space = this.spaces.get(spaceId);
+    if (!space) {
+      throw new Error(`space ${spaceId} not found`);
+    }
+    this.covers.delete(spaceId);
+    const updated = { ...space, coverUpdatedAt: null };
+    this.spaces.set(spaceId, updated);
+    return this.withCounts(updated);
+  }
+
+  async findCover(
+    spaceId: string,
+  ): Promise<{ image: Buffer; contentType: string; updatedAt: Date } | null> {
+    return this.covers.get(spaceId) ?? null;
   }
 
   async delete(spaceId: string): Promise<void> {

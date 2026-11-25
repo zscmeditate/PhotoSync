@@ -6,6 +6,7 @@ import {
   mappingNotFound,
   notMember,
   spaceNotFound,
+  validationError,
 } from '../lib/errors';
 import type { JwtService } from '../lib/jwt';
 import { parse } from '../lib/validation';
@@ -385,6 +386,135 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
         body.deviceId,
         spaceId,
         body,
+      );
+      return { space };
+    },
+  );
+
+  app.get(
+    '/spaces/:spaceId/cover',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['spaces'],
+        summary: '读取空间自定义头像（成员可用）',
+        security: bearerSecurity,
+        params: spaceParams,
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
+        response: {
+          400: errorResponses[400],
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest, reply) => {
+      const spaceId = parseSpaceId(request.params);
+      const query = parse(deviceQuerySchema, request.query);
+      const cover = await spaceService.getSpaceCover(
+        authUserId(request),
+        spaceId,
+        query.deviceId,
+      );
+      if (!cover) {
+        return reply.status(404).send({
+          error: { code: 'NOT_FOUND', message: '该空间尚未设置头像' },
+        });
+      }
+      return reply
+        .header('Content-Type', cover.contentType)
+        // 头像按 coverUpdatedAt 作为版本号缓存，客户端会主动重新拉取
+        .header('Cache-Control', 'no-store')
+        .send(cover.image);
+    },
+  );
+
+  app.put(
+    '/spaces/:spaceId/cover',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['spaces'],
+        summary: '设置空间头像（管理员操作，请求体为图片字节）',
+        security: bearerSecurity,
+        params: spaceParams,
+        querystring: {
+          type: 'object',
+          required: ['deviceId'],
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
+        // 请求体为 image/jpeg、image/png 或 image/webp 原始字节
+        consumes: ['image/jpeg', 'image/png', 'image/webp'],
+        response: {
+          200: spaceObjectSchema,
+          400: errorResponses[400],
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const spaceId = parseSpaceId(request.params);
+      const query = parse(z.object({ deviceId: uuidSchema }), request.query);
+      const body = request.body;
+      if (!Buffer.isBuffer(body) || body.length === 0) {
+        throw validationError('cover image body is required');
+      }
+      const contentType = (request.headers['content-type'] ?? 'image/jpeg')
+        .split(';')[0]
+        .trim();
+      const space = await spaceService.setSpaceCover(
+        authUserId(request),
+        query.deviceId,
+        spaceId,
+        body,
+        contentType,
+      );
+      return { space };
+    },
+  );
+
+  app.delete(
+    '/spaces/:spaceId/cover',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['spaces'],
+        summary: '移除空间头像（管理员操作）',
+        security: bearerSecurity,
+        params: spaceParams,
+        querystring: {
+          type: 'object',
+          required: ['deviceId'],
+          additionalProperties: false,
+          properties: { deviceId: { type: 'string' } },
+        },
+        response: {
+          200: spaceObjectSchema,
+          400: errorResponses[400],
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const spaceId = parseSpaceId(request.params);
+      const query = parse(z.object({ deviceId: uuidSchema }), request.query);
+      const space = await spaceService.clearSpaceCover(
+        authUserId(request),
+        query.deviceId,
+        spaceId,
       );
       return { space };
     },

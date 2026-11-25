@@ -1,5 +1,8 @@
 package com.photosync.app.ui.spaces
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +73,7 @@ fun SpaceListScreen(
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val loadError by viewModel.loadError.collectAsStateWithLifecycle()
     val membersBySpace by viewModel.membersBySpace.collectAsStateWithLifecycle()
+    val spaceFileCounts by viewModel.spaceFileCounts.collectAsStateWithLifecycle()
     val devices by viewModel.devices.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
     val membershipChanging by viewModel.membershipChanging.collectAsStateWithLifecycle()
@@ -77,6 +81,17 @@ fun SpaceListScreen(
     var deleteTarget by remember { mutableStateOf<LocalSpace?>(null) }
     var manageSpaceId by remember { mutableStateOf<String?>(null) }
     var exitTarget by remember { mutableStateOf<LocalSpace?>(null) }
+    // 正在为哪个空间选头像：系统照片选择器返回后据此落入对应的空间
+    var coverTarget by remember { mutableStateOf<LocalSpace?>(null) }
+    val coverPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        val target = coverTarget
+        coverTarget = null
+        if (uri != null && target != null) {
+            viewModel.setSpaceCover(target.id, uri)
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
@@ -165,15 +180,25 @@ fun SpaceListScreen(
                         }
                         items(displaySpaces, key = { it.id }) { space ->
                             val joined = space.role != "none"
+                            // 只有空间管理员可以设置/移除头像，其他设备只负责展示
+                            val canEditCover = joined && (space.role == "admin" || space.role == "owner")
                             SpaceCard(
                                 space = space,
                                 hasError = space.id in abnormalSpaceIds,
+                                fileCount = spaceFileCounts[space.id] ?: 0,
                                 members = membersBySpace[space.id].orEmpty(),
                                 showParticipants = joined,
                                 thisDeviceId = viewModel.currentDeviceId,
                                 canManageMembers = canManageMembers && joined,
                                 onManageMembers = if (joined) ({ manageSpaceId = space.id }) else null,
                                 onExitSpace = if (joined) ({ exitTarget = space }) else null,
+                                onChangeCover = if (canEditCover) ({
+                                    coverTarget = space
+                                    coverPicker.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }) else null,
+                                onRemoveCover = if (canEditCover) ({ viewModel.clearSpaceCover(space.id) }) else null,
                                 onClick = { onOpenSpace(space.id) },
                                 onRename = if (joined) ({ onEditSpace(space.id) }) else null,
                                 onDelete = if (joined) ({ deleteTarget = space }) else null

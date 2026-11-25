@@ -34,8 +34,16 @@ class SyncWorker(
         // 传入 spaceId 时只同步该空间（空间详情页手动同步的后台兜底）；
         // 未传入时走全量同步（应用启动、周期同步、实时变更提示等全局触发）。
         val spaceId = inputData.getString(KEY_SPACE_ID)
+        // 实时提示触发的同步只处理远端变更，跳过本地目录扫描，避免目录状态反复翻转。
+        val skipLocalScan = inputData.getBoolean(KEY_SKIP_LOCAL_SCAN, false)
         val engine = app.container.syncEngine
-        return when (val result = if (spaceId.isNullOrBlank()) engine.syncAll() else engine.syncSpace(spaceId)) {
+        return when (
+            val result = if (spaceId.isNullOrBlank()) {
+                engine.syncAll(skipLocalScan)
+            } else {
+                engine.syncSpace(spaceId, skipLocalScan)
+            }
+        ) {
             SyncRunResult.SUCCESS -> Result.success()
             SyncRunResult.RETRY -> Result.retry()
             SyncRunResult.FAILURE -> Result.failure()
@@ -45,6 +53,9 @@ class SyncWorker(
     companion object {
         /** 输入参数：非空时 SyncWorker 只同步该空间，为空/null 时全量同步。 */
         const val KEY_SPACE_ID = "spaceId"
+
+        /** 输入参数：true 时只拉取云端变更与执行队列任务，不扫描本地目录（实时提示使用）。 */
+        const val KEY_SKIP_LOCAL_SCAN = "skipLocalScan"
     }
 
     private fun hasWifiOrEthernet(context: Context): Boolean {
@@ -64,13 +75,20 @@ object SyncScheduler {
 
     /**
      * 立即同步：实时提示、手动同步使用。Wi-Fi 限制在 SyncWorker 内检查。
-     * @param force 手动同步为 true：取消可能卡在退避重试中的旧任务并立即执行，
-     *              避免 ExistingWorkPolicy.KEEP 丢弃用户点击；后台触发保持追加，不打断正在运行的同步。
+     * @param force 手动同步为 true：替换排队中的任务并立即执行，避免用户点击被丢弃；
+     *              后台触发使用 KEEP，已有排队/运行中的同步会一并覆盖后续更新，不再追加长队列。
      * @param spaceId 非空时只同步该空间（空间内手动操作的兜底）；为 null 时全量同步所有空间。
+     * @param skipLocalScan true 时跳过本地目录扫描（实时提示只处理远端变更）。
      */
-    fun enqueue(context: Context, force: Boolean = false, spaceId: String? = null) {
+    fun enqueue(
+        context: Context,
+        force: Boolean = false,
+        spaceId: String? = null,
+        skipLocalScan: Boolean = false
+    ) {
         val inputData = Data.Builder().apply {
             if (!spaceId.isNullOrBlank()) putString(SyncWorker.KEY_SPACE_ID, spaceId)
+            if (skipLocalScan) putBoolean(SyncWorker.KEY_SKIP_LOCAL_SCAN, true)
         }.build()
         val request = OneTimeWorkRequestBuilder<SyncWorker>()
             .setInputData(inputData)
@@ -82,7 +100,7 @@ object SyncScheduler {
         val workName = if (spaceId.isNullOrBlank()) ONCE_WORK_NAME else "$ONCE_WORK_NAME:$spaceId"
         WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
             workName,
-            if (force) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.APPEND_OR_REPLACE,
+            if (force) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
             request
         )
     }

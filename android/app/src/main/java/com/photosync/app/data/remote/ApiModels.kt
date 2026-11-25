@@ -106,7 +106,9 @@ data class SpaceDto(
     val memberCount: Int = 0,
     val mappingCount: Int = 0,
     val createdAt: String? = null,
-    val updatedAt: String? = null
+    val updatedAt: String? = null,
+    /** 空间头像最近更新时间（ISO8601）；null 表示管理员未设置头像 */
+    val coverUpdatedAt: String? = null
 )
 
 @Serializable
@@ -307,7 +309,9 @@ data class FileOperationRequest(
     val uploadId: String? = null,
     val fileId: String? = null,
     val baseVersion: Int = 0,
-    val newRelativePath: String? = null
+    val newRelativePath: String? = null,
+    /** 用户已确认的批量删除：显式跳过服务端批量删除阈值。 */
+    val confirmBulkDelete: Boolean = false
 )
 
 @Serializable

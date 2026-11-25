@@ -55,6 +55,48 @@ class SpaceDetailViewModel(
     val fileCounts: StateFlow<List<MappingFileCount>> = spaceRepository.observeFileCounts(spaceId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** 本地批量删除待确认数量：超过保护阈值时云端暂不删除，也不会把文件重新下载回本地。 */
+    val pendingDeletionCount: StateFlow<Int> = syncRepository.observePendingDeletionCount(spaceId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    private val _resolvingBulkDelete = MutableStateFlow(false)
+    val resolvingBulkDelete: StateFlow<Boolean> = _resolvingBulkDelete.asStateFlow()
+
+    /** 确认批量删除：把待确认记录转成删除任务并立即执行。 */
+    fun confirmPendingDeletions() {
+        if (_resolvingBulkDelete.value) return
+        viewModelScope.launch {
+            _resolvingBulkDelete.value = true
+            try {
+                syncRepository.confirmPendingDeletions(spaceId)
+                val result = syncEngine.runQueuedTasks()
+                val msg = when (result) {
+                    SyncRunResult.SUCCESS -> "已同步删除云端文件"
+                    SyncRunResult.RETRY -> "删除已提交，等待下一次同步"
+                    SyncRunResult.FAILURE -> "部分删除任务失败，请查看任务详情"
+                }
+                _messages.emit(msg)
+            } finally {
+                _resolvingBulkDelete.value = false
+            }
+        }
+    }
+
+    /** 保留云端文件：放弃这批待确认删除，下次同步会把它们重新下载回本地目录。 */
+    fun keepPendingDeletionFiles() {
+        if (_resolvingBulkDelete.value) return
+        viewModelScope.launch {
+            _resolvingBulkDelete.value = true
+            try {
+                syncRepository.cancelPendingDeletions(spaceId)
+                scheduleSync()
+                _messages.emit("已保留云端文件，稍后会重新下载回本地")
+            } finally {
+                _resolvingBulkDelete.value = false
+            }
+        }
+    }
+
     val syncStats: StateFlow<SyncTaskStats> = syncRepository.observeStats(spaceId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncTaskStats())
 
@@ -69,6 +111,11 @@ class SpaceDetailViewModel(
     /** 手动同步进行中（含扫描阶段），按钮据此显示「正在同步…」并禁用，避免点击后无反馈。 */
     private val _syncing = MutableStateFlow(false)
     val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
+
+    /** 后台同步（启动/周期/列表页）是否正在同步当前空间，用于让按钮状态与真实扫描保持一致。 */
+    val backgroundSyncing: StateFlow<Boolean> = syncEngine.syncingSpaceIds
+        .map { spaceId in it }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /** 正在批量按云端优先处理重名失败任务。 */
     private val _resolvingAllDuplicateNames = MutableStateFlow(false)
@@ -354,6 +401,11 @@ class SpaceDetailViewModel(
     /** 立即同步：前台时直接调用 SyncEngine（绕过 WorkManager 的调度延迟），同时排一个后台 Work 兜底。 */
     fun syncNow() {
         if (_syncing.value) return
+        if (backgroundSyncing.value) {
+            // 后台同步正在执行（含扫描），再点一次只会排队并重复扫描，直接提示即可。
+            viewModelScope.launch { _messages.emit("正在同步中，请稍候") }
+            return
+        }
         viewModelScope.launch {
             _syncing.value = true
             try {

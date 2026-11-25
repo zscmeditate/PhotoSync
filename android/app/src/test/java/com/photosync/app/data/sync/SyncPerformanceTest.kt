@@ -44,7 +44,7 @@ class SyncPerformanceTest {
     }
 
     @Test
-    fun suppressesBulkDeletionsOnLargeIndex() {
+    fun bulkDeletionOnLargeIndex_requiresUserConfirmation() {
         val files = (0 until 20_000).map { index ->
             LocalFileIndex(
                 id = index.toLong(),
@@ -61,9 +61,11 @@ class SyncPerformanceTest {
                 remoteVersion = 1
             )
         }
-        // 模拟目录被卸载：扫描结果为空，删除数远超阈值，不应产生删除任务。
+        // 模拟整目录被移走：删除数远超阈值，检测如实识别，由策略要求用户二次确认后才删除云端。
         val changes = LocalChangeDetector.detect(files, emptyList())
+        val deletions = changes.filterIsInstance<LocalChange.Delete>()
 
-        assertTrue(changes.none { it is LocalChange.Delete })
+        assertEquals(20_000, deletions.size)
+        assertTrue(BulkDeletionPolicy.requiresConfirmation(deletions.size))
     }
 }
