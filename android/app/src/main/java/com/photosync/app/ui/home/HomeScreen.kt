@@ -428,12 +428,8 @@ private fun HomeOverviewTab(
                                 .padding(horizontal = 14.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val (icon, tint) = when (task.type) {
-                                SyncTaskType.UPLOAD -> Icons.Filled.CloudUpload to PrimaryBlue
-                                SyncTaskType.DOWNLOAD -> Icons.Filled.CloudDownload to SuccessGreen
-                                SyncTaskType.DELETE -> Icons.Filled.Delete to ErrorRed
-                                else -> Icons.Filled.Edit to WarningOrange
-                            }
+                            val icon = TaskPresentation.typeIcon(task.type)
+                            val tint = TaskPresentation.typeColor(task.type)
                             Icon(
                                 imageVector = icon,
                                 contentDescription = null,
@@ -443,7 +439,7 @@ private fun HomeOverviewTab(
                             Spacer(Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = task.remoteRelativePath.substringAfterLast('/'),
+                                    text = TaskPresentation.taskTitle(task),
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,

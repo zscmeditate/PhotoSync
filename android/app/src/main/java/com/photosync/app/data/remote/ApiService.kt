@@ -157,6 +157,11 @@ interface ApiService {
         @Query("deviceId") deviceId: String
     ): Response<MappingsResponse>
 
+    @GET("api/v1/devices/{deviceId}/mappings")
+    suspend fun getDeviceMappings(
+        @Path("deviceId") deviceId: String
+    ): Response<MappingsResponse>
+
     @PATCH("api/v1/mappings/{mappingId}")
     suspend fun updateMapping(
         @Path("mappingId") mappingId: String,

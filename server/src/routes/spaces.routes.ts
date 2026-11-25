@@ -53,6 +53,8 @@ const joinRequestParamsSchema = z.object({ requestId: uuidSchema });
 const createMappingBodySchema = z.object({
   deviceId: uuidSchema,
   localPathLabel: z.string().trim().min(1).max(256),
+  // 设备端 SAF 树 URI：重装后用于自动恢复绑定
+  treeUri: z.string().trim().max(2048).optional(),
   onlyMedia: z.boolean().optional().default(false),
 });
 
@@ -664,6 +666,7 @@ const spacesRoutes: FastifyPluginAsync<SpacesRoutesOptions> = async (app, opts) 
           properties: {
             deviceId: { type: 'string' },
             localPathLabel: { type: 'string', minLength: 1, maxLength: 256 },
+            treeUri: { type: 'string', maxLength: 2048 },
             onlyMedia: { type: 'boolean', default: false },
           },
         },

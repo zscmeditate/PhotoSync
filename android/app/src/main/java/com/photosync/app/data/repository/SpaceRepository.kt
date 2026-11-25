@@ -113,6 +113,8 @@ class SpaceRepository(
                     }
                     spaceDao.upsertAll(remoteSpaces.map { it.toLocal(spaceDao.getById(it.id)) })
                 }
+                // 空间列表更新后尝试恢复本机在服务端记录的目录绑定（重装/重新登录场景）
+                restoreDeviceMappings()
                 ApiResult.Success(Unit)
             }
             is ApiResult.Failure -> result
@@ -294,6 +296,45 @@ class SpaceRepository(
         }
     }
 
+    /**
+     * 重装或重新登录后，从服务端恢复本机记录的目录绑定：
+     * 目录仍可访问则直接恢复为可用映射；无法访问（例如卸载后 SAF 授权丢失）先标记为待重新授权，
+     * 由用户在空间页重新选择目录。本地已有的绑定不会被覆盖。
+     */
+    suspend fun restoreDeviceMappings(): ApiResult<Int> {
+        val deviceId = currentDeviceId() ?: return ApiResult.Success(0)
+        val remote = when (val result = apiCall { apiClient.api.getDeviceMappings(deviceId) }) {
+            is ApiResult.Success -> result.data.mappings
+            is ApiResult.Failure -> return result
+        }
+        var restored = 0
+        database.withTransaction {
+            remote.forEach { dto ->
+                val treeUri = dto.treeUri
+                if (treeUri.isNullOrBlank()) return@forEach
+                if (spaceDao.getById(dto.spaceId) == null) return@forEach
+                if (mappingDao.getBySpaceAndDevice(dto.spaceId, deviceId).isNotEmpty()) return@forEach
+                val accessible = folderScanner.canAccessTree(treeUri)
+                mappingDao.upsert(
+                    LocalFolderMapping(
+                        id = dto.id,
+                        spaceId = dto.spaceId,
+                        deviceId = deviceId,
+                        localPathLabel = dto.localPathLabel,
+                        treeUri = treeUri,
+                        onlyMedia = dto.onlyMedia,
+                        status = if (accessible) MappingStatus.ACTIVE else MappingStatus.ACCESS_REVOKED,
+                        lastScanComplete = false,
+                        lastScannedAt = null,
+                        createdAt = dto.createdAt
+                    )
+                )
+                if (accessible) restored++
+            }
+        }
+        return ApiResult.Success(restored)
+    }
+
     suspend fun createMapping(
         spaceId: String,
         localPathLabel: String,
@@ -318,6 +359,7 @@ class SpaceRepository(
                     MappingCreateRequest(
                         deviceId = deviceId,
                         localPathLabel = localPathLabel,
+                        treeUri = treeUri,
                         onlyMedia = onlyMedia
                     )
                 )
@@ -477,7 +519,10 @@ class SpaceRepository(
             val result = apiCall {
                 apiClient.api.updateMapping(
                     mapping.id,
-                    MappingUpdateRequest(localPathLabel = localPathLabel)
+                    MappingUpdateRequest(
+                        localPathLabel = localPathLabel,
+                        treeUri = treeUri
+                    )
                 )
             }
         ) {

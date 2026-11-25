@@ -129,6 +129,18 @@ export class FakeDeviceRepository implements DeviceRepository {
     return true;
   }
 
+  async replacePrimaryDevice(
+    userId: string,
+    fromDeviceId: string,
+    toDeviceId: string,
+  ): Promise<boolean> {
+    if (this.primaryByUser.get(userId) !== fromDeviceId) {
+      return false;
+    }
+    this.primaryByUser.set(userId, toDeviceId);
+    return true;
+  }
+
   async clearPrimaryDevice(userId: string, deviceId: string): Promise<boolean> {
     if (this.primaryByUser.get(userId) !== deviceId) {
       return false;
@@ -501,10 +513,17 @@ export class FakeSpaceRepository implements SpaceRepository {
     const mapping: FolderMappingRecord = {
       id: randomUUID(),
       ...data,
+      treeUri: data.treeUri ?? null,
       createdAt: new Date(),
     };
     this.mappings.set(mapping.id, mapping);
     return mapping;
+  }
+
+  async listMappingsByDevice(deviceId: string): Promise<FolderMappingRecord[]> {
+    return [...this.mappings.values()]
+      .filter((mapping) => mapping.deviceId === deviceId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
   async updateMapping(

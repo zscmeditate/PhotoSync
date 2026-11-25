@@ -185,6 +185,7 @@ data class MappingDto(
     val spaceId: String,
     val deviceId: String,
     val localPathLabel: String,
+    val treeUri: String? = null,
     val onlyMedia: Boolean,
     val createdAt: String? = null
 )
@@ -193,12 +194,14 @@ data class MappingDto(
 data class MappingCreateRequest(
     val deviceId: String,
     val localPathLabel: String,
+    val treeUri: String? = null,
     val onlyMedia: Boolean
 )
 
 @Serializable
 data class MappingUpdateRequest(
-    val localPathLabel: String? = null
+    val localPathLabel: String? = null,
+    val treeUri: String? = null
 )
 
 @Serializable

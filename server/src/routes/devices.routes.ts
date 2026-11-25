@@ -271,7 +271,7 @@ const devicesRoutes: FastifyPluginAsync<DevicesRoutesOptions> = async (app, opts
       preHandler: auth,
       schema: {
         tags: ['devices'],
-        summary: '主设备把已移除设备从列表清理',
+        summary: '主设备把指定设备记录从列表清理',
         security: bearerSecurity,
         params: {
           type: 'object',

@@ -242,7 +242,8 @@ interface LocalFileIndexDao {
         LocalSyncTask::class,
         LocalSyncCursor::class
     ],
-    version = 7,
+    // 基线版本：历史迁移已合并，后续结构变化从 1 开始新增迁移
+    version = 1,
     exportSchema = false
 )
 abstract class SyncDatabase : RoomDatabase() {

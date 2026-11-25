@@ -89,7 +89,7 @@ class DeviceListViewModel(
                     deviceRepository.refreshDevices()
                     _messages.emit(
                         if (result.code == "PRIMARY_DEVICE_TAKEN") {
-                            "已有主设备，请先在主设备上放弃主设备身份"
+                            "当前主设备在线，无法抢占；该设备离线超过 5 分钟后可再次尝试"
                         } else {
                             "设置主设备失败：${result.message}"
                         }

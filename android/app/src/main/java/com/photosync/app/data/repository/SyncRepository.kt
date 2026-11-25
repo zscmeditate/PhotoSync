@@ -193,10 +193,6 @@ class SyncRepository(
         }
     }
 
-    /** 清理游标已越过但仍显示失败的改名标记（旧版本遗留）。 */
-    suspend fun deleteStaleFailedRenameTasks(spaceId: String, lastAppliedRevision: String) =
-        taskDao.deleteStaleFailedRenameTasks(spaceId, lastAppliedRevision)
-
     /** 清理源文件已不存在的失败上传任务。 */
     suspend fun deleteFailedUploadsWithoutLocalFile(spaceId: String) =
         taskDao.deleteFailedUploadsWithoutLocalFile(spaceId)
@@ -280,7 +276,8 @@ class SyncRepository(
                                 LocalChange.Delete(
                                     relativePath = change.oldRelativePath,
                                     fileId = change.fileId,
-                                    baseVersion = change.baseVersion
+                                    baseVersion = change.baseVersion,
+                                    size = change.size
                                 )
                             )
                         } else {
@@ -313,7 +310,7 @@ class SyncRepository(
                             spaceId, mapping, SyncTaskType.DELETE,
                             localPath = change.relativePath, remotePath = change.relativePath,
                             fileId = change.fileId, baseVersion = change.baseVersion,
-                            oldLocalRelativePath = null, now
+                            size = change.size, oldLocalRelativePath = null, now
                         )
                     }
                     is LocalChange.Rename -> {
@@ -323,7 +320,7 @@ class SyncRepository(
                             localPath = change.newRelativePath,
                             remotePath = RemoteDownloadPlanner.remotePath(change.newRelativePath),
                             fileId = change.fileId, baseVersion = change.baseVersion,
-                            oldLocalRelativePath = change.oldRelativePath, now
+                            size = change.size, oldLocalRelativePath = change.oldRelativePath, now
                         )
                     }
                 }
@@ -420,12 +417,13 @@ class SyncRepository(
         mapping: LocalFolderMapping,
         localPath: String,
         fileId: String,
-        baseVersion: Int
+        baseVersion: Int,
+        size: Long
     ) = enqueueMutationTask(
         spaceId, mapping, SyncTaskType.DELETE,
         localPath = localPath, remotePath = localPath,
         fileId = fileId, baseVersion = baseVersion,
-        oldLocalRelativePath = null, now = System.currentTimeMillis()
+        size = size, oldLocalRelativePath = null, now = System.currentTimeMillis()
     )
 
     /** 文件失败处理「保留本地」（云端无对应文件）：按新文件上传。 */
@@ -481,6 +479,7 @@ class SyncRepository(
         remotePath: String,
         fileId: String,
         baseVersion: Int,
+        size: Long,
         oldLocalRelativePath: String?,
         now: Long
     ) {
@@ -494,7 +493,7 @@ class SyncRepository(
             localRelativePath = localPath,
             remoteRelativePath = remotePath,
             fileId = fileId,
-            size = 0L,
+            size = size,
             baseVersion = baseVersion,
             oldLocalRelativePath = oldLocalRelativePath,
             operationId = "",
@@ -510,12 +509,14 @@ class SyncRepository(
      */
     suspend fun reconcileRemoteLinks(mappingId: String, remoteFiles: List<RemoteFileDto>) {
         if (remoteFiles.isEmpty()) return
+        val mapping = mappingDao.getById(mappingId) ?: return
         database.withTransaction {
             val localFiles = fileDao.getByMapping(mappingId)
             if (localFiles.isEmpty()) return@withTransaction
             val remoteByPath = remoteFiles.associateBy { it.relativePath }
             for (local in localFiles) {
-                if (!local.remoteFileId.isNullOrBlank()) continue
+                // 已关联且状态正常的文件无需重复核对；失败行即使已关联也要核对，用于修复历史失败
+                if (!local.remoteFileId.isNullOrBlank() && local.status == FileSyncStatus.SYNCED) continue
                 val remote = remoteByPath[local.relativePath] ?: continue
                 val localSha = local.sha256
                 val remoteSha = remote.sha256
@@ -531,6 +532,12 @@ class SyncRepository(
                         remoteFileId = remote.fileId,
                         remoteVersion = remote.version
                     )
+                )
+                // 清理该路径遗留的排队/失败任务，避免失败列表残留「远端已存在同名文件」
+                taskDao.deleteActiveTasksForRemotePath(
+                    mapping.spaceId,
+                    mappingId,
+                    RemoteDownloadPlanner.remotePath(local.relativePath)
                 )
             }
         }
@@ -591,7 +598,8 @@ class SyncRepository(
         remotePath: String,
         fileId: String,
         revision: String,
-        type: String
+        type: String,
+        size: Long = 0L
     ): LocalSyncTask {
         taskForEvent(spaceId, revision)?.let { return it }
         val now = System.currentTimeMillis()
@@ -604,7 +612,7 @@ class SyncRepository(
             localRelativePath = localPath,
             remoteRelativePath = remotePath,
             fileId = fileId,
-            size = 0L,
+            size = size,
             operationId = "",
             eventRevision = revision,
             createdAt = now,

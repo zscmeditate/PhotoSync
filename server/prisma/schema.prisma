@@ -197,6 +197,8 @@ model FolderMapping {
   space          SyncSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   // 设备端展示用的本地路径标签（不存绝对路径，避免泄露设备目录结构）
   localPathLabel String
+  // 设备端 SAF 树 URI：重装或重新登录后用于恢复该设备上的目录绑定（仅本机可用）
+  treeUri        String?
   // 同步过滤规则（扩展名/通配符等）
   filters        Json?
   createdAt      DateTime  @default(now())

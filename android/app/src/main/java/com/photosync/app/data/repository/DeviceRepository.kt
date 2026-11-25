@@ -10,6 +10,7 @@ import com.photosync.app.data.remote.DeviceDto
 import com.photosync.app.data.remote.DeviceRegisterRequest
 import com.photosync.app.data.remote.DeviceRenameRequest
 import com.photosync.app.data.remote.apiCall
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.time.Duration
@@ -139,9 +140,22 @@ class DeviceRepository(
      */
     suspend fun ensureThisDevice(deviceName: String): ApiResult<String> {
         val name = deviceName.ifBlank { Build.MODEL }
+        // 硬件标识（Widevine）刚启动时可能瞬时读取失败，稍等重试；
+        // 不做兜底：仍读不到就直接失败，避免服务端分配随机 ID 导致重装后出现重复设备
+        var requestedId = tokenStore.localDeviceId
+        var waited = 0
+        while (requestedId == null && waited < 5) {
+            delay(200)
+            requestedId = tokenStore.localDeviceId
+            waited++
+        }
+        val deviceId = requestedId ?: return ApiResult.Failure(
+            code = "DEVICE_ID_UNAVAILABLE",
+            message = "无法读取设备硬件标识（当前机型不支持 Widevine），无法登记设备"
+        )
         return when (val result = apiCall {
             apiClient.api.registerDevice(
-                DeviceRegisterRequest(name, tokenStore.localDeviceId)
+                DeviceRegisterRequest(name, deviceId)
             )
         }) {
             is ApiResult.Success -> {

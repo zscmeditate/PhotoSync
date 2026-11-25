@@ -94,8 +94,8 @@ class SyncPlanningTest {
         assertTrue(needsRemoteReconcile(listOf(file("a.jpg", null), file("b.jpg", null))))
         // 已有部分远端关联属于正常增量同步，不再整体核对
         assertFalse(needsRemoteReconcile(listOf(file("a.jpg", "f1"), file("b.jpg", null))))
-        // 存在未关联且已失败的旧记录：需要重新核对，内容一致时直接采纳
-        assertTrue(
+        // 存在远端关联时即便个别记录是失败状态也不整体核对（失败由任务重试处理）
+        assertFalse(
             needsRemoteReconcile(
                 listOf(
                     file("a.jpg", "f1"),
@@ -106,7 +106,7 @@ class SyncPlanningTest {
     }
 
     @Test
-    fun plan_respectsMediaRuleAndSkipsTrashPaths() {
+    fun plan_skipsSystemTrashAndRespectsMediaRule() {
         val media = SyncMappingRule("root", onlyMedia = true)
         assertEquals(
             DownloadPathPlan("root", "2026/a.heic", "2026/a.heic"),
@@ -117,9 +117,16 @@ class SyncPlanningTest {
             RemoteDownloadPlanner.plan("2026/a.mp4", listOf(media))
         )
         assertNull(RemoteDownloadPlanner.plan("2026/notes.txt", listOf(media)))
+        // 系统回收站内容（历史误上传）不下载
         assertNull(
             RemoteDownloadPlanner.plan(
-                "$LOCAL_TRASH_DIR_NAME/old.jpg",
+                "Download/.trashed-1803299579-a.mp4",
+                listOf(SyncMappingRule("root", onlyMedia = false))
+            )
+        )
+        assertNull(
+            RemoteDownloadPlanner.plan(
+                ".Trash/old.jpg",
                 listOf(SyncMappingRule("root", onlyMedia = false))
             )
         )

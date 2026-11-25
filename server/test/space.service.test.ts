@@ -489,6 +489,27 @@ describe('SpaceService 目录映射（一空间一设备一个目录）', () => 
     ).resolves.toMatchObject({ deviceId: second.id, localPathLabel: 'Pictures' });
   });
 
+  it('映射会保存设备端 treeUri，可按设备列出用于重装后恢复', async () => {
+    const { service, space, device, userId } = await setupSpace();
+    const treeUri = 'content://com.android.externalstorage.documents/tree/primary%3ADCIM';
+    const mapping = await service.createMapping(userId, space.id, {
+      deviceId: device.id,
+      localPathLabel: 'DCIM',
+      treeUri,
+      onlyMedia: false,
+    });
+    expect(mapping.treeUri).toBe(treeUri);
+
+    const listed = await service.listDeviceMappings(userId, device.id);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ id: mapping.id, spaceId: space.id, treeUri });
+
+    const updated = await service.updateMapping(userId, mapping.id, {
+      treeUri: 'content://com.android.externalstorage.documents/tree/primary%3APictures',
+    });
+    expect(updated.treeUri).toContain('primary%3APictures');
+  });
+
   it('更新映射只改标签与过滤规则，他人的映射按 404 隐藏', async () => {
     const { service, space, device, userId } = await setupSpace();
     const mapping = await service.createMapping(userId, space.id, {

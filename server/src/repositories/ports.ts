@@ -79,6 +79,11 @@ export interface DeviceRepository {
   findPrimaryDeviceId(userId: string): Promise<string | null>;
   /** 抢占主设备；已有其它主设备时返回 false（幂等：自己已是主设备返回 true） */
   claimPrimaryDevice(userId: string, deviceId: string): Promise<boolean>;
+  /**
+   * 原主设备离线时，把主设备身份从 fromDeviceId 原子转移给 toDeviceId。
+   * 仅当当前主设备仍为 fromDeviceId 时成功，避免并发抢占。
+   */
+  replacePrimaryDevice(userId: string, fromDeviceId: string, toDeviceId: string): Promise<boolean>;
   /** 放弃主设备身份；仅当该设备当前是主设备时返回 true */
   clearPrimaryDevice(userId: string, deviceId: string): Promise<boolean>;
 }
@@ -145,6 +150,7 @@ export interface FolderMappingRecord {
   spaceId: string;
   deviceId: string;
   localPathLabel: string;
+  treeUri: string | null;
   filters: unknown;
   createdAt: Date;
 }
@@ -167,11 +173,13 @@ export interface MappingCreateData {
   spaceId: string;
   deviceId: string;
   localPathLabel: string;
+  treeUri?: string | null;
   filters: { onlyMedia: boolean };
 }
 
 export interface MappingUpdateData {
   localPathLabel?: string;
+  treeUri?: string | null;
   filters?: { onlyMedia: boolean };
 }
 
@@ -216,6 +224,8 @@ export interface SpaceRepository {
   ): Promise<SpaceJoinRequestWithDeviceRecord>;
 
   listMappings(spaceId: string, deviceId?: string): Promise<FolderMappingRecord[]>;
+  /** 列出某台设备在全部空间上的映射，用于重装/重新登录后恢复绑定 */
+  listMappingsByDevice(deviceId: string): Promise<FolderMappingRecord[]>;
   findMappingById(mappingId: string): Promise<FolderMappingRecord | null>;
   createMapping(data: MappingCreateData): Promise<FolderMappingRecord>;
   updateMapping(mappingId: string, data: MappingUpdateData): Promise<FolderMappingRecord>;
@@ -546,12 +556,6 @@ export interface SyncRepository {
   commitFileUpdated(data: CommitFileUpdatedData): Promise<CommitMutationResult>;
   commitFileDeleted(data: CommitFileDeletedData): Promise<CommitMutationResult>;
   commitFileRenamed(data: CommitFileRenamedData): Promise<CommitMutationResult>;
-  /**
-   * 启动维护：清理历史上误入库的系统回收站文件（.trashed-* / .Trash）。
-   * 与正常删除一致：软删除 + 回收站条目 + 广播 file_deleted 事件，
-   * 各设备下次拉取时移除本地副本。仅处理未删除文件，重复执行幂等。
-   */
-  removeLegacySystemTrashFiles(): Promise<{ removed: number }>;
   getSpaceRevision(spaceId: string): Promise<bigint | null>;
   listEvents(
     spaceId: string,

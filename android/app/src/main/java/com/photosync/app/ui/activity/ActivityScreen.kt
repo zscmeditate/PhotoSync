@@ -46,6 +46,7 @@ import com.photosync.app.data.local.LocalSyncTask
 import com.photosync.app.ui.components.AppSnackbarHost
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.spaces.SpacePageHeader
+import com.photosync.app.ui.spaces.formatFileSize
 import com.photosync.app.ui.tasks.SyncTasksViewModel
 import com.photosync.app.ui.tasks.TaskPresentation
 import com.photosync.app.ui.theme.ErrorRed
@@ -162,7 +163,7 @@ private fun ActivityRow(task: LocalSyncTask, spaceName: String? = null) {
                 Icon(
                     imageVector = TaskPresentation.typeIcon(task.type),
                     contentDescription = null,
-                    tint = PrimaryBlue,
+                    tint = TaskPresentation.typeColor(task.type),
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(8.dp))
@@ -172,7 +173,7 @@ private fun ActivityRow(task: LocalSyncTask, spaceName: String? = null) {
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = TaskPresentation.displayName(task.remoteRelativePath),
+                    text = TaskPresentation.taskTitle(task),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
@@ -186,9 +187,9 @@ private fun ActivityRow(task: LocalSyncTask, spaceName: String? = null) {
                     fontWeight = FontWeight.SemiBold
                 )
             }
-            // 第二行：完整文件名（含路径，不省略，长名自动换行）
+            // 第二行：完整文件名（含路径，不省略，长名自动换行；重命名显示旧 → 新）
             Text(
-                text = task.remoteRelativePath,
+                text = TaskPresentation.taskPath(task),
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(top = 4.dp)
             )
@@ -200,7 +201,10 @@ private fun ActivityRow(task: LocalSyncTask, spaceName: String? = null) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = TaskPresentation.formatTime(task.updatedAt),
+                    text = buildString {
+                        append(TaskPresentation.formatTime(task.updatedAt))
+                        append(if (task.size > 0) " · ${formatFileSize(task.size)}" else " · 大小未知")
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = OnSurfaceMuted
                 )

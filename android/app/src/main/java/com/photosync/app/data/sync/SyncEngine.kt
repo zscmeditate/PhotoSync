@@ -367,6 +367,35 @@ class SyncEngine(
             if (remotePath != task.remoteRelativePath) {
                 return failUpload(current, "UPLOAD_PATH_CHANGED", "目录映射已变化，请重新扫描")
             }
+            // 重装/重绑后本地索引丢失时，云端可能已有同名文件：上传前先核对，
+            // 内容一致直接建立关联，避免整份文件白传后才被 FILE_ALREADY_EXISTS 拒绝。
+            if (current.fileId.isNullOrBlank()) {
+                when (val existing = apiCall {
+                    api.getFileByPath(mapping.spaceId, mapping.deviceId, remotePath)
+                }) {
+                    is ApiResult.Success -> existing.data.file?.let { remote ->
+                        if (!remote.sha256.isBlank() &&
+                            remote.sha256.equals(digest.sha256, ignoreCase = true) &&
+                            DecimalContract.long(remote.size, "file.size") == digest.size
+                        ) {
+                            repository.markSynced(
+                                current,
+                                index.copy(
+                                    size = digest.size,
+                                    sha256 = digest.sha256,
+                                    remoteFileId = remote.fileId,
+                                    remoteVersion = remote.version
+                                )
+                            )
+                            return SyncRunResult.SUCCESS
+                        }
+                        return failUpload(
+                            current, "FILE_ALREADY_EXISTS", "A file already exists at this path"
+                        )
+                    }
+                    is ApiResult.Failure -> Unit
+                }
+            }
 
             val upload = if (current.uploadId == null) {
                 when (
@@ -635,8 +664,6 @@ class SyncEngine(
         mappings: List<com.photosync.app.data.local.LocalFolderMapping>
     ): SyncRunResult {
         var since = repository.cursor(spaceId, deviceId)?.lastAppliedRevision ?: "0"
-        // 游标已越过的失败改名标记说明事件已确认，清掉旧版本遗留的失败记录。
-        runCatching { repository.deleteStaleFailedRenameTasks(spaceId, since) }
         // 源文件已不存在的失败上传任务（并发同步被改名抢走等）也没有重试意义，一并清理。
         runCatching { repository.deleteFailedUploadsWithoutLocalFile(spaceId) }
         setPhase("正在获取云端变更…")
@@ -1203,7 +1230,7 @@ class SyncEngine(
             repository.removeActiveTasksForPath(spaceId, mapping.id, plan.localRelativePath)
             repository.getOrCreateEventMarkerTask(
                 spaceId, mapping.id, plan.localRelativePath, plan.remoteRelativePath,
-                payload.fileId, event.revision, SyncTaskType.DELETE
+                payload.fileId, event.revision, SyncTaskType.DELETE, size = oldIndex?.size ?: 0L
             ).let { repository.completeTask(it) }
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
@@ -1253,7 +1280,7 @@ class SyncEngine(
                 if (renamedIndex?.remoteFileId == payload.fileId) {
                     repository.getOrCreateEventMarkerTask(
                         spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
-                        payload.fileId, event.revision, SyncTaskType.RENAME
+                        payload.fileId, event.revision, SyncTaskType.RENAME, size = renamedIndex.size
                     ).let { repository.completeTask(it) }
                 }
                 return SyncRunResult.SUCCESS
@@ -1261,7 +1288,7 @@ class SyncEngine(
             if (isLocalDiverged(mapping, oldIndex)) {
                 val marker = repository.getOrCreateEventMarkerTask(
                     spaceId, mapping.id, oldPlan.localRelativePath, oldPlan.remoteRelativePath,
-                    payload.fileId, event.revision, SyncTaskType.RENAME
+                    payload.fileId, event.revision, SyncTaskType.RENAME, size = oldIndex.size
                 )
                 repository.markTaskFailed(marker, "LOCAL_PATH_CONFLICT", "本地文件已修改，未执行远端重命名")
                 return SyncRunResult.FAILURE
@@ -1297,7 +1324,7 @@ class SyncEngine(
                     repository.removeActiveTasksForPath(spaceId, mapping.id, newPlan.localRelativePath)
                     repository.getOrCreateEventMarkerTask(
                         spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
-                        payload.fileId, event.revision, SyncTaskType.RENAME
+                        payload.fileId, event.revision, SyncTaskType.RENAME, size = oldIndex.size
                     ).let { repository.completeTask(it) }
                     return SyncRunResult.SUCCESS
                 }
@@ -1306,7 +1333,7 @@ class SyncEngine(
                     repository.deleteIndex(mapping.id, oldPlan.localRelativePath)
                     repository.getOrCreateEventMarkerTask(
                         spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
-                        payload.fileId, event.revision, SyncTaskType.RENAME
+                        payload.fileId, event.revision, SyncTaskType.RENAME, size = oldIndex.size
                     ).let { repository.completeTask(it) }
                     return SyncRunResult.SUCCESS
                 }
@@ -1314,7 +1341,7 @@ class SyncEngine(
                 // 同时把旧索引改为冲突态，避免下次扫描把「旧文件丢失」当作本地删除同步到云端。
                 val conflictMarker = repository.getOrCreateEventMarkerTask(
                     spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
-                    payload.fileId, event.revision, SyncTaskType.RENAME
+                    payload.fileId, event.revision, SyncTaskType.RENAME, size = oldIndex.size
                 )
                 repository.markTaskFailed(
                     conflictMarker, "LOCAL_PATH_CONFLICT", "新路径已存在不同内容的文件，未执行远端重命名"
@@ -1348,7 +1375,7 @@ class SyncEngine(
             repository.removeActiveTasksForPath(spaceId, mapping.id, newPlan.localRelativePath)
             repository.getOrCreateEventMarkerTask(
                 spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
-                payload.fileId, event.revision, SyncTaskType.RENAME
+                payload.fileId, event.revision, SyncTaskType.RENAME, size = oldIndex.size
             ).let { repository.completeTask(it) }
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
@@ -1975,7 +2002,8 @@ class SyncEngine(
                         mapping = mapping,
                         localPath = file.relativePath,
                         fileId = fileId!!,
-                        baseVersion = current.version
+                        baseVersion = current.version,
+                        size = file.size
                     )
                 }
             }

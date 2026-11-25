@@ -3,7 +3,6 @@ package com.photosync.app.di
 import android.content.Context
 import androidx.room.Room
 import com.photosync.app.data.local.SyncDatabase
-import com.photosync.app.data.local.SyncDatabaseMigrations
 import com.photosync.app.data.prefs.PendingBindingStore
 import com.photosync.app.data.prefs.SecureTokenStore
 import com.photosync.app.data.prefs.SettingsRepository
@@ -37,14 +36,8 @@ class AppContainer(context: Context) {
         SyncDatabase::class.java,
         "photosync.db"
     )
-        .addMigrations(
-            SyncDatabaseMigrations.MIGRATION_1_2,
-            SyncDatabaseMigrations.MIGRATION_2_3,
-            SyncDatabaseMigrations.MIGRATION_3_4,
-            SyncDatabaseMigrations.MIGRATION_4_5,
-            SyncDatabaseMigrations.MIGRATION_5_6,
-            SyncDatabaseMigrations.MIGRATION_6_7
-        )
+        // 数据库为基线版本，结构变化时直接重建（旧版本库自动清空，避免旧数据干扰）
+        .fallbackToDestructiveMigration()
         .build()
 
     val apiClient = ApiClient(settingsRepository, secureTokenStore)

@@ -839,12 +839,12 @@ private fun SyncTaskCard(
                 Icon(
                     imageVector = TaskPresentation.typeIcon(task.type),
                     contentDescription = null,
-                    tint = PrimaryBlue,
+                    tint = TaskPresentation.typeColor(task.type),
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = TaskPresentation.displayName(task.remoteRelativePath),
+                    text = TaskPresentation.taskTitle(task),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
@@ -866,7 +866,7 @@ private fun SyncTaskCard(
                 )
             }
             Text(
-                text = task.remoteRelativePath,
+                text = TaskPresentation.taskPath(task),
                 style = MaterialTheme.typography.bodySmall,
                 color = OnSurfaceMuted,
                 modifier = Modifier.padding(top = 2.dp)
@@ -875,7 +875,7 @@ private fun SyncTaskCard(
             Text(
                 text = buildString {
                     append(TaskPresentation.typeLabel(task.type))
-                    if (task.size > 0) append(" ${formatFileSize(task.size)}")
+                    append(if (task.size > 0) " ${formatFileSize(task.size)}" else " 大小未知")
                     append(" · 尝试 ${task.attempt} 次")
                     append(" · 更新于 ${TaskPresentation.formatTime(task.updatedAt)}")
                 },

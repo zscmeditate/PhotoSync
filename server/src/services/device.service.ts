@@ -36,6 +36,9 @@ export interface DeviceServiceDeps {
   now?: () => Date;
 }
 
+/** 主设备离线超过该时长后，其它设备允许接管主设备身份（与在线判定窗口保持一致）。 */
+const PRIMARY_TAKEOVER_WINDOW_MS = 5 * 60 * 1000;
+
 function toDeviceDto(device: DeviceRecord, primaryDeviceId: string | null): DeviceDto {
   return {
     id: device.id,
@@ -80,8 +83,8 @@ export class DeviceService {
           loggedOutAt: null,
           ...(revoked ? {} : { credentialStatus: 'active' as const }),
         });
-        const primaryDeviceId = await this.deps.devices.findPrimaryDeviceId(userId);
-        return toDeviceDto(updated, primaryDeviceId);
+        const primaryAfter = await this.restorePrimaryForSameDevice(userId, updated);
+        return toDeviceDto(updated, primaryAfter);
       }
     }
     const newDevice = {
@@ -103,8 +106,39 @@ export class DeviceService {
       // 并发登记同一 ID 触发唯一约束时回退为服务端生成 ID，避免登记直接失败
       device = await this.deps.devices.create(newDevice);
     }
+    const primaryAfterCreate = await this.restorePrimaryForSameDevice(userId, device);
+    return toDeviceDto(device, primaryAfterCreate);
+  }
+
+  /**
+   * 卸载重装后恢复主设备身份：若存在同名同平台的其它设备记录且它仍是主设备，
+   * 把主设备身份转给本次登记的设备。同一账号下同名同平台的记录视为同一台手机
+   * （重装后稳定 ID 变化导致记录重复），避免重装后丢失管理/审批能力。
+   * 只转移身份、不删除旧记录，旧记录仍可在设备列表中手动清理。
+   */
+  private async restorePrimaryForSameDevice(
+    userId: string,
+    device: DeviceRecord,
+  ): Promise<string | null> {
     const primaryDeviceId = await this.deps.devices.findPrimaryDeviceId(userId);
-    return toDeviceDto(device, primaryDeviceId);
+    if (primaryDeviceId === null || primaryDeviceId === device.id) {
+      return primaryDeviceId;
+    }
+    const primary = await this.deps.devices.findById(primaryDeviceId);
+    if (
+      primary === null ||
+      primary.userId !== userId ||
+      primary.platform !== device.platform ||
+      primary.deviceName !== device.deviceName
+    ) {
+      return primaryDeviceId;
+    }
+    const replaced = await this.deps.devices.replacePrimaryDevice(
+      userId,
+      primaryDeviceId,
+      device.id,
+    );
+    return replaced ? device.id : primaryDeviceId;
   }
 
   /** 列出当前用户的全部设备 */
@@ -136,11 +170,31 @@ export class DeviceService {
   }
 
   /**
-   * 抢占主设备身份：只有当前账号没有主设备时才允许（幂等）。
-   * 已存在的其它设备自动保持为从设备。
+   * 抢占主设备身份：当前账号没有主设备、或原主设备已离线超过 5 分钟时允许（幂等）。
+   * 原主设备离线超时的情况（例如卸载重装后旧记录残留）允许接管，避免账号被一条失效记录锁住。
    */
   async claimPrimary(userId: string, deviceId: string): Promise<DeviceDto> {
     const device = await this.requireOwnedActiveDevice(userId, deviceId);
+    const primaryDeviceId = await this.deps.devices.findPrimaryDeviceId(userId);
+    if (primaryDeviceId !== null && primaryDeviceId !== deviceId) {
+      const primary = await this.deps.devices.findById(primaryDeviceId);
+      const primaryOffline =
+        primary === null ||
+        primary.lastSeenAt === null ||
+        this.now().getTime() - primary.lastSeenAt.getTime() > PRIMARY_TAKEOVER_WINDOW_MS;
+      if (!primaryOffline) {
+        throw primaryDeviceTaken();
+      }
+      const replaced = await this.deps.devices.replacePrimaryDevice(
+        userId,
+        primaryDeviceId,
+        deviceId,
+      );
+      if (!replaced) {
+        throw primaryDeviceTaken();
+      }
+      return toDeviceDto(device, deviceId);
+    }
     const claimed = await this.deps.devices.claimPrimaryDevice(userId, deviceId);
     if (!claimed) {
       throw primaryDeviceTaken();
@@ -226,7 +280,7 @@ export class DeviceService {
   }
 
   /**
-   * 主设备把已移除设备的记录从列表中清理掉。
+   * 主设备把指定设备（已移除或离线残留的重复记录）从列表中清理掉。
    * 只写 loggedOutAt 做软清理：保留设备记录与同步历史，避免硬删除级联清空历史数据；
    * 该设备再次登记或申请重新加入时会重新出现在列表。
    */
@@ -235,9 +289,6 @@ export class DeviceService {
     await this.requirePrimary(userId, requestDeviceId);
     if (device.id === requestDeviceId) {
       throw validationError('Primary device cannot clear its own record');
-    }
-    if (device.credentialStatus !== 'revoked') {
-      throw validationError('Only a removed device can be cleared from the list');
     }
     await this.deps.devices.update(device.id, {
       loggedOutAt: this.now(),

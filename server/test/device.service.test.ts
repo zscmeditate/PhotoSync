@@ -126,6 +126,47 @@ describe('DeviceService primary role', () => {
     expect(reclaimed.isPrimary).toBe(true);
   });
 
+  it('restores the primary role when the same device registers again after a reinstall', async () => {
+    const { service } = makeService();
+    const old = await service.register('user-1', 'Phone A');
+    await service.claimPrimary('user-1', old.id);
+
+    const reinstalled = await service.register('user-1', 'Phone A');
+
+    expect(reinstalled.id).not.toBe(old.id);
+    expect(reinstalled.isPrimary).toBe(true);
+    const list = await service.list('user-1');
+    expect(list.find((device) => device.id === old.id)?.isPrimary).toBe(false);
+  });
+
+  it('does not hand the primary role to a different device name', async () => {
+    const { service } = makeService();
+    const primary = await service.register('user-1', 'Phone A');
+    await service.claimPrimary('user-1', primary.id);
+
+    const other = await service.register('user-1', 'Phone B');
+
+    expect(other.isPrimary).toBe(false);
+  });
+
+  it('lets another device take over when the primary has been offline for over 5 minutes', async () => {
+    const devices = new FakeDeviceRepository();
+    const refreshTokens = new FakeRefreshTokenRepository();
+    let current = new Date('2026-01-01T00:00:00.000Z');
+    const service = new DeviceService({ devices, refreshTokens, now: () => current });
+    const a = await service.register('user-1', 'Phone A');
+    const b = await service.register('user-1', 'Phone B');
+    await service.claimPrimary('user-1', a.id);
+
+    current = new Date(current.getTime() + 6 * 60 * 1000);
+    const claimed = await service.claimPrimary('user-1', b.id);
+
+    expect(claimed.isPrimary).toBe(true);
+    const list = await service.list('user-1');
+    expect(list.find((device) => device.id === a.id)?.isPrimary).toBe(false);
+    expect(list.find((device) => device.id === b.id)?.isPrimary).toBe(true);
+  });
+
   it('only the primary device can release the role', async () => {
     const { service } = makeService();
     const a = await service.register('user-1', 'Phone A');
@@ -251,17 +292,17 @@ describe('DeviceService.purgeRemoved', () => {
     );
   });
 
-  it('rejects purging an active device', async () => {
-    const { service } = makeService();
+  it('purges an active device record left behind by a reinstall', async () => {
+    const { service, devices } = makeService();
     const primary = await service.register('user-1', 'Primary');
-    const secondary = await service.register('user-1', 'Phone A');
+    const stale = await service.register('user-1', 'Phone A');
     await service.claimPrimary('user-1', primary.id);
 
-    await expectAppError(
-      () => service.purgeRemoved('user-1', primary.id, secondary.id),
-      400,
-      'VALIDATION_ERROR',
-    );
+    await service.purgeRemoved('user-1', primary.id, stale.id);
+
+    const list = await service.list('user-1');
+    expect(list.map((device) => device.id)).not.toContain(stale.id);
+    expect(devices.items.get(stale.id)?.loggedOutAt).not.toBeNull();
   });
 
   it('rejects the primary device purging its own record', async () => {

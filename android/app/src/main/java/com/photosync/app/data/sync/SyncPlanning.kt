@@ -64,10 +64,6 @@ object RemoteDownloadPlanner {
             throw SyncPlanningException(validation.error ?: "远端文件路径不能为空")
         }
         val normalized = validation.normalized
-        // 兼容历史版本误上传的本地恢复区内容：这类路径不参与同步。
-        if (normalized == LOCAL_TRASH_DIR_NAME || normalized.startsWith("$LOCAL_TRASH_DIR_NAME/")) {
-            return null
-        }
         // 系统回收站内容（历史误上传等）不再下载同步。
         if (normalized.split('/').any { MediaFileFilter.isSystemTrashed(it) || MediaFileFilter.isSystemTrashDir(it) }) {
             return null
@@ -183,7 +179,8 @@ sealed class LocalChange {
     data class Delete(
         val relativePath: String,
         val fileId: String,
-        val baseVersion: Int
+        val baseVersion: Int,
+        val size: Long
     ) : LocalChange()
 
     /** 已同步文件在本地改路径且内容一致 → 提交 file_renamed，保留 fileId 与版本。 */
@@ -246,14 +243,8 @@ private fun LocalFileIndex.resetRemoteBinding(): LocalFileIndex = copy(
  * 注意不能只看「扫描前索引为空」：绑定目录时界面会先本地扫描一次，
  * 索引里已经写满待上传记录但都还没有 remoteFileId。
  */
-fun needsRemoteReconcile(files: List<LocalFileIndex>): Boolean {
-    if (files.isEmpty()) return false
-    // 一条远端关联都没有：新绑定或重装后重新绑定
-    if (files.none { !it.remoteFileId.isNullOrBlank() }) return true
-    // 已有部分关联，但仍存在从未关联成功的失败行（如旧版本上传撞「远端已存在同名文件」后重扫保留了 SYNC_ERROR）：
-    // 重新与云端清单核对，内容一致的直接采纳，避免这些文件永久卡在同步失败。
-    return files.any { it.remoteFileId.isNullOrBlank() && it.status == FileSyncStatus.SYNC_ERROR }
-}
+fun needsRemoteReconcile(files: List<LocalFileIndex>): Boolean =
+    files.isNotEmpty() && files.none { !it.remoteFileId.isNullOrBlank() }
 
 /**
  * 比较扫描前的索引快照与扫描后的索引，产出需要执行的本地变更。
@@ -323,7 +314,8 @@ object LocalChangeDetector {
                 LocalChange.Delete(
                     relativePath = path,
                     fileId = oldFile.remoteFileId!!,
-                    baseVersion = oldFile.remoteVersion ?: 1
+                    baseVersion = oldFile.remoteVersion ?: 1,
+                    size = oldFile.size
                 )
             )
         }

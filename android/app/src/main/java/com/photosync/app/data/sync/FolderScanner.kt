@@ -24,6 +24,17 @@ data class FolderScanProgress(
 /** 递归读取 SAF DocumentFile，并以流式 SHA-256 建立本地索引。 */
 class FolderScanner(private val context: Context) {
 
+    /** 判断某个已保存的 SAF 树 URI 当前是否仍可读（卸载重装后持久授权会丢失）。 */
+    fun canAccessTree(treeUri: String): Boolean {
+        if (treeUri.isBlank()) return false
+        return try {
+            val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
+            root != null && root.exists() && root.isDirectory && root.canRead()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun scan(
         mapping: LocalFolderMapping,
         onProgress: (FolderScanProgress) -> Unit = {}

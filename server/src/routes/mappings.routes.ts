@@ -13,8 +13,10 @@ export interface MappingsRoutesOptions {
 }
 
 const mappingParamsSchema = z.object({ mappingId: z.string().uuid() });
+const deviceMappingsParamsSchema = z.object({ deviceId: z.string().uuid() });
 const updateMappingBodySchema = z.object({
   localPathLabel: z.string().trim().min(1).max(256).optional(),
+  treeUri: z.string().trim().max(2048).optional(),
   onlyMedia: z.boolean().optional(),
 });
 
@@ -57,6 +59,7 @@ const mappingsRoutes: FastifyPluginAsync<MappingsRoutesOptions> = async (app, op
           additionalProperties: false,
           properties: {
             localPathLabel: { type: 'string', minLength: 1, maxLength: 256 },
+            treeUri: { type: 'string', maxLength: 2048 },
             onlyMedia: { type: 'boolean' },
           },
         },
@@ -98,6 +101,46 @@ const mappingsRoutes: FastifyPluginAsync<MappingsRoutesOptions> = async (app, op
       const mappingId = parseMappingId(request.params);
       await spaceService.deleteMapping(authUserId(request), mappingId);
       return reply.status(204).send();
+    },
+  );
+
+  app.get(
+    '/devices/:deviceId/mappings',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['mappings'],
+        summary: '列出本机在全部空间上的目录映射（用于重装后恢复绑定）',
+        security: bearerSecurity,
+        params: {
+          type: 'object',
+          required: ['deviceId'],
+          properties: { deviceId: { type: 'string', description: '设备 UUID' } },
+        },
+        response: {
+          200: {
+            type: 'object',
+            required: ['mappings'],
+            additionalProperties: true,
+            properties: { mappings: { type: 'array', items: mappingSchema } },
+          },
+          400: errorResponses[400],
+          401: errorResponses[401],
+          404: errorResponses[404],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const result = deviceMappingsParamsSchema.safeParse(request.params);
+      if (!result.success) {
+        throw mappingNotFound();
+      }
+      const mappings = await spaceService.listDeviceMappings(
+        authUserId(request),
+        result.data.deviceId,
+      );
+      return { mappings };
     },
   );
 };

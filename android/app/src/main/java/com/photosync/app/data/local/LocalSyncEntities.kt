@@ -239,17 +239,6 @@ interface LocalSyncTaskDao {
     )
     suspend fun activeRemotePaths(spaceId: String): List<String>
 
-    /** 事件游标已越过、但仍停留在失败态的改名标记（旧版本遗留），直接清理，避免长期显示失败。 */
-    @Query(
-        """
-        DELETE FROM local_sync_tasks
-        WHERE spaceId = :spaceId AND type = 'RENAME' AND state = 'FAILED'
-          AND eventRevision IS NOT NULL AND eventRevision != ''
-          AND CAST(eventRevision AS INTEGER) <= CAST(:lastAppliedRevision AS INTEGER)
-        """
-    )
-    suspend fun deleteStaleFailedRenameTasks(spaceId: String, lastAppliedRevision: String)
-
     /** 清理源文件已不存在的失败上传任务（例如并发同步被改名抢走后遗留），避免长期显示失败。 */
     @Query(
         """

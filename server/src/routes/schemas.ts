@@ -186,6 +186,7 @@ export const mappingSchema = {
     spaceId: { type: 'string' },
     deviceId: { type: 'string' },
     localPathLabel: { type: 'string' },
+    treeUri: { anyOf: [{ type: 'string' }, { type: 'null' }] },
     onlyMedia: { type: 'boolean' },
     createdAt: { type: 'string', description: 'ISO8601' },
   },

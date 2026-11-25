@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SyncProblem
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.photosync.app.data.local.LocalSyncTask
 import com.photosync.app.data.local.SyncTaskState
 import com.photosync.app.data.local.SyncTaskType
 import com.photosync.app.ui.theme.ErrorRed
@@ -19,6 +20,7 @@ import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 import com.photosync.app.ui.theme.SuccessGreen
 import com.photosync.app.ui.theme.WarningOrange
+import com.photosync.app.ui.theme.WarningYellow
 import java.text.DateFormat
 import java.util.Date
 
@@ -39,6 +41,15 @@ object TaskPresentation {
         SyncTaskType.DELETE -> Icons.Filled.Delete
         SyncTaskType.RENAME -> Icons.Filled.DriveFileRenameOutline
         else -> Icons.Filled.Sync
+    }
+
+    /** 类型图标配色：上传绿、下载蓝、删除红、改名黄。 */
+    fun typeColor(type: String): Color = when (type) {
+        SyncTaskType.UPLOAD -> SuccessGreen
+        SyncTaskType.DOWNLOAD -> PrimaryBlue
+        SyncTaskType.DELETE -> ErrorRed
+        SyncTaskType.RENAME -> WarningYellow
+        else -> OnSurfaceMuted
     }
 
     fun stateLabel(state: String): String = when (state) {
@@ -88,6 +99,24 @@ object TaskPresentation {
     }
 
     fun displayName(path: String): String = path.substringAfterLast('/').ifBlank { path }
+
+    /** 任务标题：重命名显示「旧名 → 新名」，其余类型显示文件名。 */
+    fun taskTitle(task: LocalSyncTask): String {
+        val oldPath = task.oldLocalRelativePath
+        if (task.type == SyncTaskType.RENAME && !oldPath.isNullOrBlank()) {
+            return "${displayName(oldPath)} → ${displayName(task.remoteRelativePath)}"
+        }
+        return displayName(task.remoteRelativePath)
+    }
+
+    /** 任务完整路径：重命名显示「旧路径 → 新路径」。 */
+    fun taskPath(task: LocalSyncTask): String {
+        val oldPath = task.oldLocalRelativePath
+        if (task.type == SyncTaskType.RENAME && !oldPath.isNullOrBlank()) {
+            return "$oldPath → ${task.remoteRelativePath}"
+        }
+        return task.remoteRelativePath
+    }
 
     fun errorText(error: String?): String? {
         if (error.isNullOrBlank()) return null

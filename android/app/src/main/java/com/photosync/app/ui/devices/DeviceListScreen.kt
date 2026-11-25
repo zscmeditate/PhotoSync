@@ -263,8 +263,8 @@ private fun PrimaryDeviceCard(
             Text(
                 text = when {
                     primaryDevice == null -> "当前没有主设备，任意设备都可以抢占主设备身份。"
-                    primaryDevice.isThisDevice -> "当前主设备：本机。可在其它从设备的菜单中移除它们。"
-                    else -> "当前主设备：${primaryDevice.deviceName}。只有主设备可以移除从设备。"
+                    primaryDevice.isThisDevice -> "当前主设备：本机。可在其它设备的菜单中清理它们。"
+                    else -> "当前主设备：${primaryDevice.deviceName}。该设备离线超过 5 分钟后，本机可抢占主设备身份。"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = OnSurfaceMuted
@@ -421,8 +421,8 @@ private fun DeviceCard(
     val removed = device.credentialStatus == "revoked"
     // 只有主设备可以移除其它从设备；不能移除自己或主设备
     val canRemove = viewerIsPrimary && !removed && !device.isThisDevice && !device.isPrimary
-    // 已移除的设备只能由主设备从列表中清理
-    val canPurge = viewerIsPrimary && removed && !device.isThisDevice
+    // 主设备可以把任意其它设备的记录从列表中清理（含离线后残留的重复记录）
+    val canPurge = viewerIsPrimary && !device.isThisDevice
 
     Surface(
         shape = RoundedCornerShape(12.dp),

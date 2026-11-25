@@ -83,6 +83,8 @@ export interface MappingDto {
   spaceId: string;
   deviceId: string;
   localPathLabel: string;
+  /** 设备端 SAF 树 URI，用于重装后恢复绑定 */
+  treeUri: string | null;
   onlyMedia: boolean;
   createdAt: string;
 }
@@ -96,11 +98,13 @@ export interface CreateSpaceInput {
 export interface CreateMappingInput {
   deviceId: string;
   localPathLabel: string;
+  treeUri?: string;
   onlyMedia: boolean;
 }
 
 export interface UpdateMappingInput {
   localPathLabel?: string;
+  treeUri?: string;
   onlyMedia?: boolean;
 }
 
@@ -213,6 +217,7 @@ function toMappingDto(mapping: FolderMappingRecord): MappingDto {
     spaceId: mapping.spaceId,
     deviceId: mapping.deviceId,
     localPathLabel: mapping.localPathLabel,
+    treeUri: mapping.treeUri,
     onlyMedia: onlyMediaOf(mapping.filters),
     createdAt: mapping.createdAt.toISOString(),
   };
@@ -466,9 +471,17 @@ export class SpaceService {
       spaceId,
       deviceId: input.deviceId,
       localPathLabel: input.localPathLabel.trim(),
+      treeUri: input.treeUri?.trim() || null,
       filters: { onlyMedia: input.onlyMedia },
     });
     return toMappingDto(mapping);
+  }
+
+  /** 列出某台设备在全部空间上的映射：重装/重新登录后据此恢复本地目录绑定 */
+  async listDeviceMappings(userId: string, deviceId: string): Promise<MappingDto[]> {
+    await this.requireOwnedActiveDevice(userId, deviceId);
+    const mappings = await this.deps.spaces.listMappingsByDevice(deviceId);
+    return mappings.map(toMappingDto);
   }
 
   async listMappings(userId: string, spaceId: string, deviceId?: string): Promise<MappingDto[]> {
@@ -499,6 +512,7 @@ export class SpaceService {
       ...(input.localPathLabel !== undefined
         ? { localPathLabel: input.localPathLabel.trim() }
         : {}),
+      ...(input.treeUri !== undefined ? { treeUri: input.treeUri.trim() || null } : {}),
       ...(input.onlyMedia !== undefined ? { filters: { onlyMedia: input.onlyMedia } } : {}),
     };
     return toMappingDto(await this.deps.spaces.updateMapping(mapping.id, data));
