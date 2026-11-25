@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -34,9 +35,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.LocalSpace
+import com.photosync.app.data.sync.SyncScheduler
 import com.photosync.app.ui.components.AppSnackbarHost
 import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
@@ -53,11 +57,15 @@ fun SpaceListScreen(
     onJoinSpace: () -> Unit,
     onEditSpace: (String) -> Unit
 ) {
+    val app = LocalContext.current.applicationContext as PhotoSyncApp
     val spaces by viewModel.spaces.collectAsStateWithLifecycle()
     val pendingSpaces by viewModel.pendingSpaces.collectAsStateWithLifecycle()
     // 已加入的空间在上，本机尚未加入的空间排在其后，进入详情即可申请加入
     val displaySpaces = spaces + pendingSpaces
     val mappings by viewModel.mappings.collectAsStateWithLifecycle()
+    val joinedSpaceIds by remember(spaces) {
+        androidx.compose.runtime.derivedStateOf { spaces.filter { it.role != "none" }.map { it.id }.toSet() }
+    }
     val canCreateSpace by viewModel.canCreateSpace.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val loadError by viewModel.loadError.collectAsStateWithLifecycle()
@@ -78,6 +86,8 @@ fun SpaceListScreen(
         it.status == com.photosync.app.data.local.MappingStatus.ERROR ||
             it.status == com.photosync.app.data.local.MappingStatus.ACCESS_REVOKED
     }.map { it.spaceId }.toSet()
+
+    val hasJoinedSpaces = joinedSpaceIds.isNotEmpty()
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -142,6 +152,17 @@ fun SpaceListScreen(
                         contentPadding = PaddingValues(20.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        if (hasJoinedSpaces) {
+                            item {
+                                PrimaryButton(
+                                    text = "立即同步所有空间",
+                                    onClick = {
+                                        viewModel.syncAll { SyncScheduler.enqueue(app, force = true, spaceId = null) }
+                                    },
+                                    leadingIcon = Icons.Filled.Sync
+                                )
+                            }
+                        }
                         items(displaySpaces, key = { it.id }) { space ->
                             val joined = space.role != "none"
                             SpaceCard(

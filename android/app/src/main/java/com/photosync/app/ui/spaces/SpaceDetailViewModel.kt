@@ -217,6 +217,45 @@ class SpaceDetailViewModel(
         }
     }
 
+    /** 批量处理所有失败任务：本地与云端比较体积，保留更大的一方。 */
+    fun resolveAllLargerWins() {
+        if (_resolvingTaskId.value != null || _resolvingAllDuplicateNames.value) return
+        val failedTasks = tasks.value
+            .filter { it.state == SyncTaskState.FAILED }
+            .distinctBy { it.mappingId to it.localRelativePath }
+        if (failedTasks.isEmpty()) {
+            showMessage("没有失败任务")
+            return
+        }
+        viewModelScope.launch {
+            _resolvingAllDuplicateNames.value = true
+            var resolved = 0
+            var failed = 0
+            try {
+                val indexes = failedTasks.map { syncEngine.taskFailureIndex(it) }
+                val errors = syncEngine.resolveLargerWinsAll(indexes)
+                failedTasks.forEachIndexed { index, task ->
+                    if (errors[index] == null) {
+                        syncRepository.cancelTask(task.id)
+                        resolved++
+                    } else {
+                        failed++
+                    }
+                }
+            } finally {
+                _resolvingAllDuplicateNames.value = false
+            }
+            if (resolved > 0) scheduleSync()
+            _messages.emit(
+                if (failed == 0) {
+                    "已将 $resolved 个失败任务设为较大文件优先"
+                } else {
+                    "已处理 $resolved 个失败任务，$failed 个处理失败"
+                }
+            )
+        }
+    }
+
     /** 云端存储统计（「本地目录」右侧「云端」按钮展示用）。 */
     private val _storageStats = MutableStateFlow<StorageStatsUiState?>(null)
     val storageStats: StateFlow<StorageStatsUiState?> = _storageStats.asStateFlow()

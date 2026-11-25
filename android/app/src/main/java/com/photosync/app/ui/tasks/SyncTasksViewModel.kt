@@ -3,11 +3,14 @@ package com.photosync.app.ui.tasks
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.photosync.app.data.local.LocalSyncTask
+import com.photosync.app.data.repository.SpaceRepository
 import com.photosync.app.data.repository.SyncRepository
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -15,6 +18,7 @@ import kotlinx.coroutines.launch
 /** 活动记录 ViewModel：观察最近任务时间线（含已完成任务）；spaceId 非空时仅该空间的记录。 */
 class SyncTasksViewModel(
     private val repository: SyncRepository,
+    private val spaceRepository: SpaceRepository? = null,
     val spaceId: String? = null
 ) : ViewModel() {
 
@@ -24,6 +28,16 @@ class SyncTasksViewModel(
         } else {
             repository.observeRecentTasks(spaceId, 200)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** spaceId → 空间名映射；仅全空间模式（spaceId == null）下有值，用于在日志行打标签。 */
+    val spaceNames: StateFlow<Map<String, String>> =
+        if (spaceId != null || spaceRepository == null) {
+            kotlinx.coroutines.flow.flowOf(emptyMap())
+        } else {
+            spaceRepository.allSpaces.map { list ->
+                list.associate { it.id to it.name }
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     private val _messages = Channel<String>(Channel.BUFFERED)
     val messages: Flow<String> = _messages.receiveAsFlow()

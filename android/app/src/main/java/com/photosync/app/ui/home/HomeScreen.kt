@@ -47,6 +47,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -115,6 +116,18 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
         if (tab == HomeTab.OVERVIEW || tab == HomeTab.FILES) {
             spaceViewModel.refresh()
         }
+    }
+
+    // 从子页面（SpaceDetail / AddMapping 等）pop 返回 Home 时，立即强制刷新一次空间列表，
+    // 以便看到刚申请/审批/绑定后的最新状态。
+    DisposableEffect(navController, tab) {
+        val listener = NavController.OnDestinationChangedListener { _, destination, _ ->
+            if (destination.route == Screen.Home.route) {
+                spaceViewModel.refresh(force = true)
+            }
+        }
+        navController.addOnDestinationChangedListener(listener)
+        onDispose { navController.removeOnDestinationChangedListener(listener) }
     }
 
     // 首页是导航根页面：连续两次返回（间隔 2 秒内）才退出应用，第一次给轻量提示。
@@ -265,7 +278,7 @@ private fun HomeOverviewTab(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(20.dp),
+                .padding(14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
@@ -276,9 +289,9 @@ private fun HomeOverviewTab(
                     hasAbnormalMapping -> WarningOrange
                     else -> SuccessGreen
                 },
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(30.dp)
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
             Text(
                 text = when {
                     spaces.isEmpty() -> "暂无同步空间"
@@ -293,7 +306,7 @@ private fun HomeOverviewTab(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
             val summaryHint = when {
                 spaces.isEmpty() -> "创建空间并添加本地目录后，这里会显示空间与映射摘要。"
                 mappings.isEmpty() -> "本机尚未绑定本地目录"
@@ -307,7 +320,7 @@ private fun HomeOverviewTab(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
             Text(
                 text = "待同步任务可在各空间详情页查看",
                 color = OnSurfaceMuted,
@@ -316,8 +329,8 @@ private fun HomeOverviewTab(
         }
 
         // 统计卡片（设计图：两列灰底小卡）
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatCard(
                 icon = Icons.Filled.Folder,
                 value = "${spaces.size}",
@@ -451,16 +464,16 @@ private fun StatCard(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(14.dp),
+            .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
             tint = PrimaryBlue,
-            modifier = Modifier.size(24.dp)
+            modifier = Modifier.size(22.dp)
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(8.dp))
         Column {
             Text(
                 text = value,

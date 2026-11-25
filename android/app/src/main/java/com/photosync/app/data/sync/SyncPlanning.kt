@@ -89,6 +89,16 @@ object RemoteDownloadPlanner {
 }
 
 object SyncEventPlanner {
+    /** 本地索引已是该事件对应的文件与内容：事件对本地是空操作，无需建下载任务。 */
+    fun isAlreadyAtEventVersion(
+        indexedRemoteFileId: String?,
+        indexedSha256: String?,
+        eventFileId: String,
+        eventSha256: String
+    ): Boolean = indexedRemoteFileId == eventFileId &&
+        !indexedSha256.isNullOrBlank() &&
+        indexedSha256.equals(eventSha256, ignoreCase = true)
+
     fun shouldSkipOwnEvent(
         eventDeviceId: String,
         currentDeviceId: String,
@@ -97,9 +107,7 @@ object SyncEventPlanner {
         eventFileId: String,
         eventSha256: String
     ): Boolean = eventDeviceId == currentDeviceId &&
-        indexedRemoteFileId == eventFileId &&
-        !indexedSha256.isNullOrBlank() &&
-        indexedSha256.equals(eventSha256, ignoreCase = true)
+        isAlreadyAtEventVersion(indexedRemoteFileId, indexedSha256, eventFileId, eventSha256)
 }
 
 enum class ExistingLocalDecision { DOWNLOAD, INDEX_ONLY, CONFLICT }

@@ -34,11 +34,14 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ModalBottomSheet
@@ -134,6 +137,7 @@ fun SpaceDetailScreen(
     // 任务筛选：null = 全部；再点一次已选中的筛选可取消
     var taskFilter by rememberSaveable { mutableStateOf<TaskFilter?>(null) }
     var showClearConfirm by rememberSaveable { mutableStateOf(false) }
+    var showResolveMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -414,17 +418,38 @@ fun SpaceDetailScreen(
                                 )
                             }
                             Spacer(Modifier.weight(1f))
-                            if (taskFilter == TaskFilter.FAILED && duplicateNameFailedCount > 0) {
-                                TextButton(
-                                    onClick = viewModel::resolveAllDuplicateNamesKeepCloud,
-                                    enabled = resolvingTaskId == null && !resolvingAllDuplicateNames,
-                                    contentPadding = PaddingValues(horizontal = 8.dp)
-                                ) {
-                                    Text(
-                                        if (resolvingAllDuplicateNames) "处理中…" else "全部云端优先",
-                                        color = PrimaryBlue,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
+                            if (taskFilter == TaskFilter.FAILED && failedCount > 0) {
+                                Box {
+                                    IconButton(
+                                        onClick = { showResolveMenu = true },
+                                        enabled = resolvingTaskId == null && !resolvingAllDuplicateNames
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.MoreVert,
+                                            contentDescription = "批量处理失败任务",
+                                            tint = PrimaryBlue
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = showResolveMenu,
+                                        onDismissRequest = { showResolveMenu = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("全部云端优先") },
+                                            enabled = duplicateNameFailedCount > 0,
+                                            onClick = {
+                                                showResolveMenu = false
+                                                viewModel.resolveAllDuplicateNamesKeepCloud()
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("大文件优先") },
+                                            onClick = {
+                                                showResolveMenu = false
+                                                viewModel.resolveAllLargerWins()
+                                            }
+                                        )
+                                    }
                                 }
                             }
                             if (taskFilter == TaskFilter.SUCCESS && successCount > 0) {

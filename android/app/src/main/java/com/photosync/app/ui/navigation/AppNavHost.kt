@@ -1,5 +1,8 @@
 package com.photosync.app.ui.navigation
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -32,7 +35,16 @@ fun AppRoot(navController: NavHostController = rememberNavController()) {
         }
     }
 
-    NavHost(navController = navController, startDestination = Screen.Splash.route) {
+    // 页面切换淡入淡出：350ms（默认 700ms 的一半）
+    val fade = tween<Float>(durationMillis = 350)
+    NavHost(
+        navController = navController,
+        startDestination = Screen.Splash.route,
+        enterTransition = { fadeIn(animationSpec = fade) },
+        exitTransition = { fadeOut(animationSpec = fade) },
+        popEnterTransition = { fadeIn(animationSpec = fade) },
+        popExitTransition = { fadeOut(animationSpec = fade) }
+    ) {
 
         composable(Screen.Splash.route) {
             SplashScreen(onNavigate = ::navigateClearing)

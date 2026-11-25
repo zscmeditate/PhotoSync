@@ -222,6 +222,17 @@ class SyncEngine(
         }
         // 单个任务失败不应阻断本轮的远端变更拉取：先拉取，再在末尾汇报失败。
         val pulled = pullChanges(spaceId, deviceId, mappings)
+        // 拉取在某个失败事件处中断时，后续事件预建的下载任务会停留在「等待执行」。
+        // 这里补跑一轮下载队列，让冲突/异常任务当场落到成功或失败，无需用户再点一次刷新。
+        while (true) {
+            val task = repository.nextQueuedDownload(spaceId) ?: break
+            setPhase("正在下载：${task.remoteRelativePath.substringAfterLast('/')}")
+            when (downloadStandaloneTask(spaceId, deviceId, task)) {
+                SyncRunResult.SUCCESS -> Unit
+                SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                SyncRunResult.FAILURE -> taskFailed = true
+            }
+        }
         return when {
             pulled != SyncRunResult.SUCCESS -> pulled
             taskFailed || planFailed -> SyncRunResult.FAILURE
@@ -780,8 +791,9 @@ class SyncEngine(
             }
             val oldIndex = repository.file(mapping.id, plan.localRelativePath)
             if (event.type == "file_updated" && event.deviceId == deviceId) return
-            if (SyncEventPlanner.shouldSkipOwnEvent(
-                    event.deviceId, deviceId,
+            // 本地索引已是该事件的文件与内容（无论事件来自哪台设备）：纯空操作，不建下载任务。
+            // 否则每次重放云端事件都会冒出一批「瞬间下载成功」的假下载记录。
+            if (SyncEventPlanner.isAlreadyAtEventVersion(
                     oldIndex?.remoteFileId, oldIndex?.sha256,
                     payload.fileId, expectedSha256
                 )
@@ -862,6 +874,24 @@ class SyncEngine(
                 return SyncRunResult.FAILURE
             }
             val oldIndex = repository.file(mapping.id, plan.localRelativePath)
+            if (oldIndex != null && SyncEventPlanner.isAlreadyAtEventVersion(
+                    oldIndex.remoteFileId, oldIndex.sha256,
+                    payload.fileId, expectedSha256
+                )
+            ) {
+                // 本地已是该事件版本：只对齐版本号/状态并确认事件，不产生任何下载任务与记录。
+                if (oldIndex.remoteVersion != payload.version || oldIndex.status != FileSyncStatus.SYNCED) {
+                    repository.upsertIndex(
+                        oldIndex.copy(
+                            status = FileSyncStatus.SYNCED,
+                            remoteVersion = payload.version,
+                            lastScannedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+                settleSkippedEventTask(spaceId, event.revision)
+                return SyncRunResult.SUCCESS
+            }
             if (event.type == "file_updated") {
                 // 本设备发起的修改无需再应用；file_created 仍按内容判断避免重复下载。
                 if (event.deviceId == deviceId) {
@@ -1706,6 +1736,164 @@ class SyncEngine(
             }
         }
         return errors.toList()
+    }
+
+    /**
+     * 批量失败处理「大文件优先」：本地与云端都存在时保留体积更大的一方；
+     * 只有一方存在时直接用存在的一方。云端清单按映射批量拉取，未命中时回退单文件流程。
+     */
+    suspend fun resolveLargerWinsAll(files: List<LocalFileIndex>): List<String?> {
+        val errors = arrayOfNulls<String>(files.size)
+        val deviceId = repository.currentDeviceId()
+        if (deviceId == null) {
+            files.indices.forEach { errors[it] = "设备未注册" }
+            return errors.toList()
+        }
+        files.withIndex().groupBy { it.value.mappingId }.forEach { (mappingId, group) ->
+            val mapping = repository.mapping(mappingId)
+            if (mapping == null) {
+                group.forEach { (index, _) -> errors[index] = "映射不存在" }
+                return@forEach
+            }
+            val manifest = when (
+                val result = apiCall {
+                    api.scanManifest(
+                        mapping.spaceId,
+                        ScanManifestRequest(
+                            deviceId = deviceId,
+                            mappingId = mapping.id,
+                            scanComplete = true,
+                            files = emptyList()
+                        )
+                    )
+                }
+            ) {
+                is ApiResult.Failure -> {
+                    group.forEach { (index, file) -> errors[index] = resolveFileBySize(file) }
+                    return@forEach
+                }
+                is ApiResult.Success -> result.data.remoteFiles
+            }
+            val byPath = manifest.associateBy { it.relativePath }
+            val byFileId = manifest.associateBy { it.fileId }
+            group.forEach { (index, file) ->
+                val remote = if (file.remoteFileId != null) {
+                    byFileId[file.remoteFileId]
+                } else {
+                    byPath[file.relativePath]
+                }
+                val localSize = runCatching {
+                    fileStore.findTarget(mapping, file.relativePath)?.takeIf { it.isFile }?.length()
+                }.getOrNull()
+                val remoteUsable = remote?.takeIf {
+                    !it.objectId.isNullOrBlank() && it.version > 0 && !it.sha256.isNullOrBlank()
+                }
+                errors[index] = when {
+                    // 本地已不存在：等同「保留云端」
+                    localSize == null && remoteUsable != null -> {
+                        val objectId = remoteUsable.objectId ?: ""
+                        val sha = remoteUsable.sha256 ?: ""
+                        applyKeepCloud(file, mapping, remoteUsable.fileId, objectId, remoteUsable.size, sha, remoteUsable.version)
+                    }
+                    // 本地已不存在且清单无有效云端版本、或清单未命中：回退单文件流程
+                    localSize == null || remoteUsable == null -> resolveFileBySize(file)
+                    // 本地更大：直接用清单里的云端 ID/版本排覆盖上传，不再逐条请求后端
+                    remoteUsable.size < localSize -> applyKeepLocal(file, mapping, remoteUsable.fileId, remoteUsable.version)
+                    else -> {
+                        val objectId = remoteUsable.objectId ?: ""
+                        val sha = remoteUsable.sha256 ?: ""
+                        applyKeepCloud(file, mapping, remoteUsable.fileId, objectId, remoteUsable.size, sha, remoteUsable.version)
+                    }
+                }
+            }
+        }
+        return errors.toList()
+    }
+
+    /**
+     * 「保留本地」的本地收尾：重新摘要本地文件并直接排入覆盖上传。
+     * 云端文件 ID 与版本由调用方提供（批量流程来自 manifest），无需逐条网络查询。
+     */
+    private suspend fun applyKeepLocal(
+        file: LocalFileIndex,
+        mapping: LocalFolderMapping,
+        fileId: String,
+        remoteVersion: Int
+    ): String? {
+        val target = fileStore.findTarget(mapping, file.relativePath)
+            ?: return "本地文件已不存在，可改用「删除」"
+        if (!target.isFile) return "本地路径不是文件"
+        val digest = fileStore.digest(target)
+        repository.transaction {
+            repository.removeActiveTasksForPath(mapping.spaceId, mapping.id, file.relativePath)
+            repository.upsertIndex(
+                file.copy(
+                    status = FileSyncStatus.PENDING_UPLOAD,
+                    size = digest.size,
+                    sha256 = digest.sha256,
+                    docUri = file.docUri.ifBlank { target.uri.toString() },
+                    remoteFileId = fileId,
+                    remoteVersion = remoteVersion
+                )
+            )
+            repository.enqueueOverwriteUpload(
+                spaceId = mapping.spaceId,
+                mapping = mapping,
+                localPath = file.relativePath,
+                size = digest.size,
+                sha256 = digest.sha256,
+                baseVersion = remoteVersion,
+                fileId = fileId,
+                now = System.currentTimeMillis()
+            )
+        }
+        return null
+    }
+
+    /** 「大文件优先」单文件版本：查询云端当前大小后与本地比较，保留较大的一方。 */
+    private suspend fun resolveFileBySize(file: LocalFileIndex): String? {
+        return try {
+            val mapping = repository.mapping(file.mappingId) ?: return "映射不存在"
+            val deviceId = repository.currentDeviceId() ?: return "设备未注册"
+            val localSize = runCatching {
+                fileStore.findTarget(mapping, file.relativePath)?.takeIf { it.isFile }?.length()
+            }.getOrNull()
+            val fileId = file.remoteFileId ?: when (
+                val result = apiCall { api.getFileByPath(mapping.spaceId, deviceId, file.relativePath) }
+            ) {
+                is ApiResult.Failure -> return "查询云端文件失败：${result.message}"
+                is ApiResult.Success -> result.data.file?.fileId
+            }
+            if (fileId == null) {
+                return if (localSize == null) "本地与云端都没有此文件" else resolveFileKeepLocal(file)
+            }
+            val current = when (val result = apiCall { api.getFileVersions(fileId, deviceId) }) {
+                is ApiResult.Failure -> return "查询云端版本失败：${result.message}"
+                is ApiResult.Success -> result.data.versions.firstOrNull()
+            }
+            val remoteSize = current?.size?.toLongOrNull()
+            if (current == null || current.objectId.isBlank() || current.version <= 0 ||
+                current.sha256.isNullOrBlank() || remoteSize == null
+            ) {
+                return if (localSize == null) "云端文件已不存在" else resolveFileKeepLocal(file)
+            }
+            if (localSize == null) {
+                return applyKeepCloud(
+                    file, mapping, fileId, current.objectId, remoteSize, current.sha256!!, current.version
+                )
+            }
+            if (localSize > remoteSize) {
+                applyKeepLocal(file, mapping, fileId, current.version)
+            } else {
+                applyKeepCloud(
+                    file, mapping, fileId, current.objectId, remoteSize, current.sha256!!, current.version
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "处理失败"
+        }
     }
 
     /**

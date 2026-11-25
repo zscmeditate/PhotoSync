@@ -18,10 +18,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteForever
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,11 +63,14 @@ import com.photosync.app.util.formatIsoTime
 fun TrashScreen(spaceId: String, onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val viewModel: TrashViewModel = viewModel(key = "trash-$spaceId") {
-        TrashViewModel(app.container.maintenanceRepository, spaceId)
+        TrashViewModel(app.container.spaceRepository, app.container.maintenanceRepository, spaceId)
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val canClearTrash by viewModel.canClearTrash.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var purgeTarget by remember { mutableStateOf<TrashItemDto?>(null) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showClearAllConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
@@ -77,11 +82,33 @@ fun TrashScreen(spaceId: String, onBack: () -> Unit) {
                 title = "回收站",
                 onBack = onBack,
                 actions = {
-                    if (state.loading) {
+                    if (state.loading || state.clearing) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                     } else {
-                        IconButton(onClick = viewModel::refresh) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "刷新回收站")
+                        Box {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("刷新") },
+                                    onClick = {
+                                        showMenu = false
+                                        viewModel.refresh()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("清空回收站") },
+                                    enabled = canClearTrash && state.items.isNotEmpty(),
+                                    onClick = {
+                                        showMenu = false
+                                        showClearAllConfirm = true
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -132,6 +159,16 @@ fun TrashScreen(spaceId: String, onBack: () -> Unit) {
             confirmText = "彻底删除",
             onConfirm = { viewModel.purge(item) },
             onDismiss = { purgeTarget = null }
+        )
+    }
+
+    if (showClearAllConfirm) {
+        ConfirmBottomSheet(
+            title = "清空回收站",
+            message = "回收站内 ${state.items.size} 个文件将被永久删除，无法恢复。",
+            confirmText = "清空",
+            onConfirm = { viewModel.purgeAll() },
+            onDismiss = { showClearAllConfirm = false }
         )
     }
 }

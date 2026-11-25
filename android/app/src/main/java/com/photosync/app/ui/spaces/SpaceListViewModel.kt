@@ -168,4 +168,12 @@ class SpaceListViewModel(
     fun hasAbnormalMapping(spaceId: String): Boolean = mappings.value.any {
         it.spaceId == spaceId && (it.status == MappingStatus.ERROR || it.status == MappingStatus.ACCESS_REVOKED)
     }
+
+    /** 立即同步所有空间：由 UI 层传入 SyncScheduler.enqueue 作为 lambda，ViewModel 不依赖 Context。 */
+    fun syncAll(scheduler: () -> Unit) {
+        viewModelScope.launch {
+            scheduler()
+            _messages.emit("已排队同步所有空间")
+        }
+    }
 }

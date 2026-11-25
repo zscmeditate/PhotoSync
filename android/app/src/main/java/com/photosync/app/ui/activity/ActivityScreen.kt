@@ -1,5 +1,6 @@
 package com.photosync.app.ui.activity
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,15 +51,16 @@ import com.photosync.app.ui.tasks.TaskPresentation
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
-
 /** 同步日志：最近同步任务的时间线（含已完成、失败与冲突阻塞）；spaceId 非空时仅展示该空间。 */
 @Composable
 fun ActivityScreen(spaceId: String? = null, onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as PhotoSyncApp
     val viewModel: SyncTasksViewModel = viewModel {
-        SyncTasksViewModel(app.container.syncRepository, spaceId)
+        SyncTasksViewModel(app.container.syncRepository, app.container.spaceRepository, spaceId)
     }
     val tasks by viewModel.recent.collectAsStateWithLifecycle()
+    val spaceNames by viewModel.spaceNames.collectAsStateWithLifecycle()
+    val showSpaceTag = spaceId == null && spaceNames.isNotEmpty()
     val grouped = remember(tasks) {
         tasks.groupBy { TaskPresentation.formatDate(it.updatedAt) }
     }
@@ -71,7 +74,7 @@ fun ActivityScreen(spaceId: String? = null, onBack: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
             SpacePageHeader(
-                title = "同步日志",
+                title = if (spaceId != null) "同步日志" else "全部空间日志",
                 onBack = onBack,
                 actions = {
                     if (tasks.isNotEmpty()) {
@@ -108,7 +111,10 @@ fun ActivityScreen(spaceId: String? = null, onBack: () -> Unit) {
                             )
                         }
                         items(items, key = { it.id }) { task ->
-                            ActivityRow(task)
+                            ActivityRow(
+                                task = task,
+                                spaceName = if (showSpaceTag) spaceNames[task.spaceId] else null
+                            )
                         }
                     }
                 }
@@ -142,7 +148,7 @@ fun ActivityScreen(spaceId: String? = null, onBack: () -> Unit) {
 }
 
 @Composable
-private fun ActivityRow(task: LocalSyncTask) {
+private fun ActivityRow(task: LocalSyncTask, spaceName: String? = null) {
     val color = TaskPresentation.stateColor(task.state)
     val error = TaskPresentation.errorText(task.error)
     Surface(
@@ -186,13 +192,23 @@ private fun ActivityRow(task: LocalSyncTask) {
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(top = 4.dp)
             )
-            // 第三行：时间
-            Text(
-                text = TaskPresentation.formatTime(task.updatedAt),
-                style = MaterialTheme.typography.bodySmall,
-                color = OnSurfaceMuted,
-                modifier = Modifier.padding(top = 2.dp)
-            )
+            // 第三行：时间靠左，空间标签贴到卡片右下角
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = TaskPresentation.formatTime(task.updatedAt),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = OnSurfaceMuted
+                )
+                Spacer(Modifier.weight(1f))
+                if (!spaceName.isNullOrBlank()) {
+                    SpaceTag(text = spaceName)
+                }
+            }
             if (error != null) {
                 Text(
                     text = error,
@@ -203,4 +219,18 @@ private fun ActivityRow(task: LocalSyncTask) {
             }
         }
     }
+}
+
+/** 小而轻的空间标签：浅蓝底色 + 深蓝文字。 */
+@Composable
+private fun SpaceTag(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = PrimaryBlue,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(PrimaryBlue.copy(alpha = 0.10f))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    )
 }
