@@ -56,6 +56,8 @@ export interface DeviceRepository {
   findById(id: string): Promise<DeviceRecord | null>;
   listByUser(userId: string): Promise<DeviceRecord[]>;
   create(data: {
+    /** 客户端自带的稳定设备 ID；缺省时由数据库生成 */
+    id?: string;
     userId: string;
     deviceName: string;
     platform: DevicePlatformValue;

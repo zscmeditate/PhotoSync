@@ -54,6 +54,9 @@ import com.photosync.app.ui.components.SecondaryButton
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.SuccessGreen
 
+/** 尚未保存过配置时输入框预填的服务器地址。 */
+private const val DEFAULT_SERVER_URL = "http://8.130.116.158:3000/"
+
 /**
  * 服务器配置页：输入基础 URL、测试连接（/api/v1/health）、保存并继续。
  */
@@ -70,12 +73,16 @@ fun ServerConfigScreen(
     val health by viewModel.health.collectAsStateWithLifecycle()
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    var url by rememberSaveable { mutableStateOf("") }
+    var url by rememberSaveable { mutableStateOf(DEFAULT_SERVER_URL) }
     var allowHttp by rememberSaveable { mutableStateOf(false) }
+    var urlRestored by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        if (url.isBlank()) {
-            url = app.container.serverRepository.getServerBaseUrl()
+        if (!urlRestored) {
+            urlRestored = true
+            // 已保存过配置时回显用户地址，否则保留预填的默认地址。
+            val saved = app.container.serverRepository.getServerBaseUrl()
+            if (saved.isNotBlank()) url = saved
         }
     }
 

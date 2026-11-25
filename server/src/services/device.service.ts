@@ -84,13 +84,25 @@ export class DeviceService {
         return toDeviceDto(updated, primaryDeviceId);
       }
     }
-    const device = await this.deps.devices.create({
+    const newDevice = {
       userId,
       deviceName: name,
-      platform: 'android',
-      credentialStatus: 'active',
+      platform: 'android' as const,
+      credentialStatus: 'active' as const,
       lastSeenAt: now,
-    });
+    };
+    let device: DeviceRecord;
+    try {
+      // 客户端可自带稳定设备 ID（由 ANDROID_ID 派生）：首次登记即固定下来，
+      // 卸载重装后仍能命中同一条记录，不会重复登记。
+      device = await this.deps.devices.create(deviceId ? { ...newDevice, id: deviceId } : newDevice);
+    } catch (error) {
+      if (!deviceId || !isUniqueConstraintError(error)) {
+        throw error;
+      }
+      // 并发登记同一 ID 触发唯一约束时回退为服务端生成 ID，避免登记直接失败
+      device = await this.deps.devices.create(newDevice);
+    }
     const primaryDeviceId = await this.deps.devices.findPrimaryDeviceId(userId);
     return toDeviceDto(device, primaryDeviceId);
   }
@@ -288,4 +300,13 @@ export class DeviceService {
     }
     return device;
   }
+}
+
+/** Prisma 唯一约束冲突（P2002）判定，用于客户端自带 ID 的并发登记回退 */
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'P2002'
+  );
 }

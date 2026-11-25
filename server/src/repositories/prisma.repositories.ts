@@ -131,6 +131,7 @@ export class PrismaDeviceRepository implements DeviceRepository {
   }
 
   async create(data: {
+    id?: string;
     userId: string;
     deviceName: string;
     platform: DevicePlatformValue;
@@ -139,6 +140,7 @@ export class PrismaDeviceRepository implements DeviceRepository {
   }): Promise<DeviceRecord> {
     return this.prisma.device.create({
       data: {
+        ...(data.id ? { id: data.id } : {}),
         userId: data.userId,
         deviceName: data.deviceName,
         platform: data.platform as DevicePlatform,

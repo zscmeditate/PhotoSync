@@ -2,14 +2,18 @@ package com.photosync.app.data.prefs
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.provider.Settings
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import java.util.UUID
 
 /**
  * Token 与账号信息的安全存储：EncryptedSharedPreferences + Android Keystore。
  * 保存 accessToken / refreshToken 及当前账号、本机设备信息。
  */
 class SecureTokenStore(context: Context) {
+
+    private val appContext = context.applicationContext
 
     private val prefs: SharedPreferences = run {
         val masterKey = MasterKey.Builder(context)
@@ -44,12 +48,29 @@ class SecureTokenStore(context: Context) {
         get() = prefs.getString(KEY_USER_NAME, null)
         set(value) = prefs.edit().putString(KEY_USER_NAME, value).apply()
 
-    /** 本机在服务端注册后得到的设备 ID */
+    /**
+     * 本机设备 ID：已登记时返回服务端下发的 ID；尚未登记（例如卸载重装后数据被清空）
+     * 时返回由 [Settings.Secure.ANDROID_ID] 派生的稳定 UUID，服务端按该 ID 建记录并长期复用，
+     * 因此同一台手机重装后不会再新增重复设备。
+     */
     var localDeviceId: String?
-        get() = prefs.getString(KEY_LOCAL_DEVICE_ID, null)
+        get() = prefs.getString(KEY_LOCAL_DEVICE_ID, null) ?: stableDeviceId
         set(value) = prefs.edit().putString(KEY_LOCAL_DEVICE_ID, value).apply()
 
-    fun currentDeviceId(): String? = localDeviceId
+    /** 已登记到服务端的设备 ID；未登记时为 null，避免同步请求引用尚不存在的设备 */
+    fun currentDeviceId(): String? = prefs.getString(KEY_LOCAL_DEVICE_ID, null)
+
+    /**
+     * 由 ANDROID_ID 派生的稳定 UUID：同一设备、同一签名、同一系统用户下跨卸载重装不变，
+     * 仅在恢复出厂设置或换机时变化。
+     */
+    private val stableDeviceId: String? by lazy {
+        runCatching {
+            Settings.Secure.getString(appContext.contentResolver, Settings.Secure.ANDROID_ID)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { UUID.nameUUIDFromBytes("photosync-device:$it".toByteArray()).toString() }
+        }.getOrNull()
+    }
 
     val isLoggedIn: Boolean
         get() = !accessToken.isNullOrBlank()

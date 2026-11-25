@@ -2,6 +2,7 @@ package com.photosync.app.data.sync
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import com.photosync.app.data.local.LocalFileIndex
 import com.photosync.app.data.local.LocalFolderMapping
@@ -43,6 +44,10 @@ class SafFileStore(private val context: Context) {
         if (document == null || !document.exists() || !document.isFile || !document.canRead()) {
             throw SafFileException("本地文件不存在或不可读：${index.relativePath}")
         }
+        if (isSystemTrashEntry(document)) {
+            // 索引遗留指向系统回收站副本：按「已删除」处理，避免把系统删除的文件重新传回云端。
+            throw SafFileException("本地文件已移入系统回收站：${index.relativePath}")
+        }
         document
     }
 
@@ -53,13 +58,8 @@ class SafFileStore(private val context: Context) {
         val segments = validatedSegments(localRelativePath)
         var current = resolveRoot(mapping)
         for ((index, segment) in segments.withIndex()) {
-            val child = try {
-                current.findFile(segment)
-            } catch (e: SecurityException) {
-                throw FolderAccessException("读取本地目录时授权失效")
-            } catch (e: Exception) {
-                throw SafFileException("无法查找本地文件：$localRelativePath", e)
-            } ?: return@withContext null
+            val child = current.visibleChild(segment, localRelativePath)
+                ?: return@withContext null
             if (index < segments.lastIndex && !child.isDirectory) {
                 throw SafFileException("本地路径的父级不是目录：$localRelativePath")
             }
@@ -104,7 +104,7 @@ class SafFileStore(private val context: Context) {
                 throw SafFileException("重命名失败：$oldLocalRelativePath -> $newLocalRelativePath")
             }
         } else {
-            if (newParent.findFile(newFileName) != null) {
+            if (newParent.visibleChild(newFileName, newLocalRelativePath) != null) {
                 throw LocalPathConflictException("目标文件已存在，不能覆盖：$newLocalRelativePath")
             }
             copyStream(src, newParent, newFileName)
@@ -171,7 +171,7 @@ class SafFileStore(private val context: Context) {
         val tag = "conflict from ${deviceId.take(8)}"
         var candidate = "$base ($tag)$ext"
         var suffix = 2
-        while (parent.findFile(candidate) != null) {
+        while (parent.visibleChild(candidate, localRelativePath) != null) {
             candidate = "$base ($tag $suffix)$ext"
             suffix += 1
         }
@@ -248,7 +248,7 @@ class SafFileStore(private val context: Context) {
         val fileName = segments.last()
         val root = resolveRoot(mapping)
         val parent = createParents(root, segments.dropLast(1))
-        if (parent.findFile(fileName) != null) {
+        if (parent.visibleChild(fileName, localRelativePath) != null) {
             throw LocalPathConflictException("目标文件已存在，不能覆盖：$localRelativePath")
         }
 
@@ -342,13 +342,13 @@ class SafFileStore(private val context: Context) {
             // 断点续传无法复用中断前的哈希状态，下载完成后整文件复算校验
             val finalTemp = temp!!
             verifyDownloadedFile(finalTemp, expectedSize, expectedSha256)
-            if (parent.findFile(fileName) != null) {
+            if (parent.visibleChild(fileName, localRelativePath) != null) {
                 throw LocalPathConflictException("下载期间目标文件已出现，不能覆盖：$localRelativePath")
             }
             if (!finalTemp.renameTo(fileName)) {
                 throw SafFileException("下载已校验，但临时文件重命名失败")
             }
-            val renamed = parent.findFile(fileName)
+            val renamed = parent.visibleChild(fileName, localRelativePath)
                 ?: throw SafFileException("下载文件重命名后无法读取")
             if (renamed.name != fileName || !renamed.isFile) {
                 throw SafFileException("下载文件重命名后的名称或类型不正确")
@@ -427,7 +427,7 @@ class SafFileStore(private val context: Context) {
     private fun createParents(root: DocumentFile, segments: List<String>): DocumentFile {
         var current = root
         for (segment in segments) {
-            val existing = current.findFile(segment)
+            val existing = current.visibleChild(segment, segments.joinToString("/"))
             current = if (existing != null) {
                 if (!existing.isDirectory) throw SafFileException("本地路径的父级不是目录：$segment")
                 existing
@@ -450,6 +450,45 @@ class SafFileStore(private val context: Context) {
             throw SyncPlanningException(validation.error ?: "本地相对路径无效")
         }
         return validation.normalized.split('/')
+    }
+
+    /**
+     * 按名称查找子项，但跳过 Android 系统回收站条目（`.trashed-*`）。
+     *
+     * MediaStore 的「删除」只是把文件改名为 `.trashed-<ts>-<原名>`，而 MIUI 等 ROM 的
+     * [DocumentFile.getName] 返回的是展示名（不含前缀），因此 [DocumentFile.findFile]
+     * 会命中已被系统删除的文件。若直接采信，会把回收站内容当成有效的本地副本：
+     * 下载被误判为「内容一致」只补索引、索引随即又被扫描判为缺失而再次删除，
+     * 形成「删除 → 假下载 → 再删除」的循环。
+     *
+     * 命中回收站条目时再扫描一次同级子项，尽量返回真正的同名文件。
+     */
+    private fun DocumentFile.visibleChild(name: String, path: String): DocumentFile? {
+        val direct = try {
+            findFile(name)
+        } catch (e: SecurityException) {
+            throw FolderAccessException("读取本地目录时授权失效")
+        } catch (e: Exception) {
+            throw SafFileException("无法查找本地文件：$path", e)
+        } ?: return null
+        if (!isSystemTrashEntry(direct)) return direct
+        val children = try {
+            listFiles()
+        } catch (e: SecurityException) {
+            throw FolderAccessException("读取本地目录时授权失效")
+        } catch (e: Exception) {
+            throw SafFileException("无法读取本地目录：$path", e)
+        }
+        return children.firstOrNull { it.name == name && !isSystemTrashEntry(it) }
+    }
+
+    /** 是否为系统回收站条目：同时检查展示名、URI 末段与 SAF 文档 ID，避免前缀被 ROM 隐藏。 */
+    private fun isSystemTrashEntry(document: DocumentFile): Boolean {
+        val uri = document.uri
+        if (MediaFileFilter.isSystemTrashPath(uri.lastPathSegment.orEmpty())) return true
+        val documentId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
+        if (documentId != null && MediaFileFilter.isSystemTrashPath(documentId)) return true
+        return MediaFileFilter.isSystemTrashed(document.name.orEmpty())
     }
 
     private fun openInput(document: DocumentFile): InputStream {
