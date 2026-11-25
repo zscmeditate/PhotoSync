@@ -31,7 +31,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -56,6 +55,7 @@ import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.FileSyncStatus
 import com.photosync.app.data.local.LocalFileIndex
 import com.photosync.app.data.remote.ConflictDto
+import com.photosync.app.ui.components.AppSnackbarHost
 import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.tasks.TaskPresentation
@@ -106,108 +106,110 @@ fun MappingFilesScreen(
         viewModel.refreshConflicts()
     }
 
-    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-        SpacePageHeader(title = mapping?.localPathLabel ?: "映射文件", onBack = onBack)
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            item {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+            SpacePageHeader(title = mapping?.localPathLabel ?: "映射文件", onBack = onBack)
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "空间根目录",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                mapping?.let { MappingStatusChip(it.status) }
+                            }
+                            Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "空间根目录",
-                                style = MaterialTheme.typography.titleMedium,
-                                modifier = Modifier.weight(1f)
+                                text = "索引状态：${if (mapping?.lastScanComplete == true) "完整" else "未完成"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (mapping?.lastScanComplete == true) PrimaryBlue else OnSurfaceMuted
                             )
-                            mapping?.let { MappingStatusChip(it.status) }
+                            Text(
+                                text = "扫描时间：${formatIsoTime(mapping?.lastScannedAt)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OnSurfaceMuted
+                            )
+                            // 文件统计：总数与已同步数量常显，待同步/冲突/失败仅在存在时补充
+                            val syncedCount = files.count { it.status == com.photosync.app.data.local.FileSyncStatus.SYNCED }
+                            val pendingCount = files.count {
+                                it.status == com.photosync.app.data.local.FileSyncStatus.PENDING_UPLOAD ||
+                                    it.status == com.photosync.app.data.local.FileSyncStatus.PENDING_DOWNLOAD ||
+                                    it.status == com.photosync.app.data.local.FileSyncStatus.LOCAL_ONLY
+                            }
+                            val conflictCount = files.count { it.status == com.photosync.app.data.local.FileSyncStatus.CONFLICT }
+                            val failedCount = files.count { it.status == com.photosync.app.data.local.FileSyncStatus.SYNC_ERROR }
+                            Text(
+                                text = buildString {
+                                    append("文件数量：${files.size} · 已同步 $syncedCount")
+                                    if (pendingCount > 0) append(" · 待同步 $pendingCount")
+                                    if (conflictCount > 0) append(" · 冲突 $conflictCount")
+                                    if (failedCount > 0) append(" · 失败 $failedCount")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = OnSurfaceMuted
+                            )
                         }
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = "索引状态：${if (mapping?.lastScanComplete == true) "完整" else "未完成"}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (mapping?.lastScanComplete == true) PrimaryBlue else OnSurfaceMuted
-                        )
-                        Text(
-                            text = "扫描时间：${formatIsoTime(mapping?.lastScannedAt)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = OnSurfaceMuted
-                        )
-                        // 文件统计：总数与已同步数量常显，待同步/冲突/失败仅在存在时补充
-                        val syncedCount = files.count { it.status == com.photosync.app.data.local.FileSyncStatus.SYNCED }
-                        val pendingCount = files.count {
-                            it.status == com.photosync.app.data.local.FileSyncStatus.PENDING_UPLOAD ||
-                                it.status == com.photosync.app.data.local.FileSyncStatus.PENDING_DOWNLOAD ||
-                                it.status == com.photosync.app.data.local.FileSyncStatus.LOCAL_ONLY
-                        }
-                        val conflictCount = files.count { it.status == com.photosync.app.data.local.FileSyncStatus.CONFLICT }
-                        val failedCount = files.count { it.status == com.photosync.app.data.local.FileSyncStatus.SYNC_ERROR }
-                        Text(
-                            text = buildString {
-                                append("文件数量：${files.size} · 已同步 $syncedCount")
-                                if (pendingCount > 0) append(" · 待同步 $pendingCount")
-                                if (conflictCount > 0) append(" · 冲突 $conflictCount")
-                                if (failedCount > 0) append(" · 失败 $failedCount")
+                    }
+                }
+                if (files.isNotEmpty()) {
+                    item {
+                        FileSortBar(
+                            sortKey = sortKey,
+                            ascending = sortAscending,
+                            onKeyChange = { key ->
+                                sortKey = key
+                                // 时间/大小/状态默认倒序（新→旧、大→小），文件名默认正序
+                                sortAscending = key == FileSortKey.NAME
                             },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = OnSurfaceMuted
+                            onToggleOrder = { sortAscending = !sortAscending }
+                        )
+                    }
+                }
+                if (files.isEmpty()) {
+                    item {
+                        EmptyStateView(
+                            icon = Icons.Filled.Description,
+                            title = "暂无本地文件索引",
+                            subtitle = "返回空间详情点击「立即同步」后会在此显示索引；扫描失败不会清空已有索引"
+                        )
+                    }
+                } else {
+                    itemsIndexed(sortedFiles, key = { _, file -> file.id }) { index, file ->
+                        val failed = viewModel.isResolvable(file)
+                        val conflict = file.remoteFileId?.let { conflicts[it] }
+                        FileIndexRow(
+                            order = index + 1,
+                            file = file,
+                            errorText = if (failed) {
+                                taskErrors[file.relativePath]?.let { TaskPresentation.errorText(it) } ?: "同步失败"
+                            } else {
+                                null
+                            },
+                            failed = failed,
+                            conflict = conflict,
+                            conflictBusy = conflict != null && conflictResolvingId == conflict.conflictId,
+                            onResolveConflict = { resolution ->
+                                conflict?.let { conflictPending = it to resolution }
+                            },
+                            onOpenFailure = { viewModel.openFailureDetail(file) },
+                            onClick = file.remoteFileId?.let { { onOpenVersions(it) } }
                         )
                     }
                 }
             }
-            if (files.isNotEmpty()) {
-                item {
-                    FileSortBar(
-                        sortKey = sortKey,
-                        ascending = sortAscending,
-                        onKeyChange = { key ->
-                            sortKey = key
-                            // 时间/大小/状态默认倒序（新→旧、大→小），文件名默认正序
-                            sortAscending = key == FileSortKey.NAME
-                        },
-                        onToggleOrder = { sortAscending = !sortAscending }
-                    )
-                }
-            }
-            if (files.isEmpty()) {
-                item {
-                    EmptyStateView(
-                        icon = Icons.Filled.Description,
-                        title = "暂无本地文件索引",
-                        subtitle = "返回空间详情点击「立即同步」后会在此显示索引；扫描失败不会清空已有索引"
-                    )
-                }
-            } else {
-                itemsIndexed(sortedFiles, key = { _, file -> file.id }) { index, file ->
-                    val failed = viewModel.isResolvable(file)
-                    val conflict = file.remoteFileId?.let { conflicts[it] }
-                    FileIndexRow(
-                        order = index + 1,
-                        file = file,
-                        errorText = if (failed) {
-                            taskErrors[file.relativePath]?.let { TaskPresentation.errorText(it) } ?: "同步失败"
-                        } else {
-                            null
-                        },
-                        failed = failed,
-                        conflict = conflict,
-                        conflictBusy = conflict != null && conflictResolvingId == conflict.conflictId,
-                        onResolveConflict = { resolution ->
-                            conflict?.let { conflictPending = it to resolution }
-                        },
-                        onOpenFailure = { viewModel.openFailureDetail(file) },
-                        onClick = file.remoteFileId?.let { { onOpenVersions(it) } }
-                    )
-                }
-            }
         }
-        SnackbarHost(hostState = snackbarHostState)
+        AppSnackbarHost(hostState = snackbarHostState)
     }
 
     failureDetail?.let { detail ->

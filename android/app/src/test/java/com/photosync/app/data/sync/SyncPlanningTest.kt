@@ -1,5 +1,7 @@
 package com.photosync.app.data.sync
 
+import com.photosync.app.data.local.FileSyncStatus
+import com.photosync.app.data.local.LocalFileIndex
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -36,6 +38,33 @@ class SyncPlanningTest {
         assertTrue(MediaFileFilter.isSystemTrashPath("Download/.Trash/a.jpg"))
         assertFalse(MediaFileFilter.isSystemTrashPath("Download/20年吉利帝豪GL2 (1).mp4"))
         assertFalse(MediaFileFilter.isSystemTrashPath("primary:DCIM/Camera/IMG_0001.jpg"))
+    }
+
+    @Test
+    fun dedupeRemoteBindings_resetsExtraCopyToPendingUpload() {
+        fun file(id: Long, path: String, fileId: String?, version: Int?) = LocalFileIndex(
+            id = id,
+            mappingId = "m",
+            relativePath = path,
+            fileName = path,
+            size = 1,
+            modifiedAt = 0,
+            sha256 = "s",
+            docUri = "",
+            status = FileSyncStatus.SYNCED,
+            lastScannedAt = 0,
+            remoteFileId = fileId,
+            remoteVersion = version
+        )
+        val copy = file(2, "b.mp4", "f", null)
+        val original = file(1, "a.mp4", "f", 1)
+        val result = dedupeRemoteBindings(listOf(copy, original))
+
+        // 保留有远端版本的原始绑定，另一条重置为待上传（会作为新文件上传）
+        assertEquals("a.mp4", result[1].relativePath)
+        assertEquals("f", result[1].remoteFileId)
+        assertNull(result[0].remoteFileId)
+        assertEquals(FileSyncStatus.PENDING_UPLOAD, result[0].status)
     }
 
     @Test

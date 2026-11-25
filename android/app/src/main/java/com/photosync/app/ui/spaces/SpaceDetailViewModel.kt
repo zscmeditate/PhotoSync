@@ -70,9 +70,6 @@ class SpaceDetailViewModel(
     private val _syncing = MutableStateFlow(false)
     val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
 
-    /** 同步引擎当前阶段描述（扫描/上传/下载/拉取云端变更），null 表示空闲。 */
-    val syncPhase: StateFlow<String?> = syncEngine.phase
-
     /** 正在批量按云端优先处理重名失败任务。 */
     private val _resolvingAllDuplicateNames = MutableStateFlow(false)
     val resolvingAllDuplicateNames: StateFlow<Boolean> = _resolvingAllDuplicateNames.asStateFlow()
@@ -323,7 +320,8 @@ class SpaceDetailViewModel(
             try {
                 syncRepository.requeueFailed(spaceId)
                 // 前台直接执行，避免 MIUI JobScheduler 加的 TIMING_DELAY（实测可达 7 分钟以上）
-                val result = syncEngine.syncAll()
+                // 仅同步当前空间：点击「立即同步」时只扫描本空间对应的目录，不扫描其他空间。
+                val result = syncEngine.syncSpace(spaceId)
                 val msg = when (result) {
                     SyncRunResult.SUCCESS -> "同步完成"
                     SyncRunResult.RETRY -> "另外一台设备正在同步，请稍后"

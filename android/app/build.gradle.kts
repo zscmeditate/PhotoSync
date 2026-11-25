@@ -1,9 +1,40 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
+}
+
+// 版本号按「日期.当天第几次打包」生成，例如 20261124.001；每次打包自动递增并写回 version.properties
+val versionFile = rootProject.file("version.properties")
+val buildDay = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+val storedVersion = Properties().apply {
+    if (versionFile.exists()) versionFile.inputStream().use { load(it) }
+}
+val buildSeq = if (storedVersion.getProperty("date") == buildDay) {
+    (storedVersion.getProperty("count")?.toIntOrNull() ?: 0) + 1
+} else 1
+val appVersionName = "$buildDay.${String.format(Locale.US, "%03d", buildSeq)}"
+
+fun persistBuildVersion() {
+    Properties().apply {
+        setProperty("date", buildDay)
+        setProperty("count", buildSeq.toString())
+    }.store(versionFile.outputStream(), null)
+}
+
+// 只在真正执行 APK/AAB 打包任务后写回编号；IDE 同步、单元测试、clean、只编译都不会消耗编号。
+// 不能按任务图里是否含 assemble 判断：testDebugUnitTest 等也会拉入 assembleDebugUnitTest 而被误判。
+tasks.configureEach {
+    if (name.matches(Regex("^(package|bundle)(Debug|Release)$"))) {
+        doLast { persistBuildVersion() }
+    }
 }
 
 android {
@@ -15,7 +46,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = appVersionName
     }
 
     buildTypes {
@@ -39,6 +70,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

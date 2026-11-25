@@ -31,6 +31,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayInputStream
 import java.io.IOException
 
@@ -47,6 +49,13 @@ class SyncEngine(
     /** 当前同步阶段描述（供 UI 按钮实时显示正在做什么），null 表示空闲。 */
     private val _phase = MutableStateFlow<String?>(null)
     val phase: StateFlow<String?> = _phase.asStateFlow()
+
+    /**
+     * 串行化同步入口：手动同步、自动同步（WorkManager）与刷新按钮可能同时触发。
+     * 若两轮同步并发，扫描写的索引会覆盖另一轮已应用的改名结果，
+     * 从而产生「重复下载新文件名」「把旧文件名当新文件上传」等幻影任务。
+     */
+    private val syncMutex = Mutex()
 
     private fun setPhase(text: String) {
         _phase.value = text
@@ -81,7 +90,9 @@ class SyncEngine(
      * 不做本地扫描、不规划新任务、不拉取远端事件，失败任务也不重排（由用户显式处理）。
      * 供「刷新」按钮使用，成本低、可频繁触发。
      */
-    suspend fun runQueuedTasks(): SyncRunResult {
+    suspend fun runQueuedTasks(): SyncRunResult = syncMutex.withLock { runQueuedTasksLocked() }
+
+    private suspend fun runQueuedTasksLocked(): SyncRunResult {
         val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
         try {
             var result = SyncRunResult.SUCCESS
@@ -123,7 +134,9 @@ class SyncEngine(
         }
     }
 
-    suspend fun syncSpace(spaceId: String): SyncRunResult {
+    suspend fun syncSpace(spaceId: String): SyncRunResult = syncMutex.withLock { syncSpaceLocked(spaceId) }
+
+    private suspend fun syncSpaceLocked(spaceId: String): SyncRunResult {
         val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
         repository.recoverRunning(spaceId)
         repository.recoverScanning(spaceId)
@@ -166,7 +179,7 @@ class SyncEngine(
                 // 兜底补齐：云端存在、本地索引缺失且没有未完成任务的文件，补建下载任务。
                 // 用于修复历史「云端优先」未生成下载任务造成的本地缺失（新建空目录不自动拉全量）。
                 if (!freshlyBound && current.isNotEmpty()) {
-                    when (reconcileMissingDownloads(mapping, current.map { it.relativePath }.toSet())) {
+                    when (reconcileMissingDownloads(mapping, current)) {
                         SyncRunResult.RETRY -> planRetry = true
                         else -> Unit
                     }
@@ -262,11 +275,15 @@ class SyncEngine(
     /**
      * 兜底补齐：云端存在、但本地索引缺失、且没有未完成任务的文件，补建独立下载任务。
      * 只依赖远端清单即可发现这类文件（正常情况由事件驱动下载覆盖）。
+     * 远端路径缺失但同一 fileId 已在本地另一路径存在时，说明是尚未拉取的远端重命名，
+     * 交给 file_renamed 事件搬迁，避免先下载新路径副本再与重命名目标冲突。
      */
     private suspend fun reconcileMissingDownloads(
         mapping: LocalFolderMapping,
-        localPaths: Set<String>
+        localFiles: List<LocalFileIndex>
     ): SyncRunResult {
+        val localPaths = localFiles.mapTo(HashSet()) { it.relativePath }
+        val localFileIds = localFiles.mapNotNullTo(HashSet()) { it.remoteFileId }
         val remote = when (
             val result = apiCall {
                 api.scanManifest(
@@ -287,6 +304,7 @@ class SyncEngine(
         val activePaths = repository.activeRemotePaths(mapping.spaceId).toHashSet()
         for (file in remote) {
             if (file.relativePath in localPaths || file.relativePath in activePaths) continue
+            if (file.fileId in localFileIds) continue
             // 补齐下载需要 objectId：按路径取当前生效版本
             val current = when (
                 val result = apiCall { api.getFileByPath(mapping.spaceId, mapping.deviceId, file.relativePath) }
@@ -302,7 +320,8 @@ class SyncEngine(
                 fileId = file.fileId,
                 objectId = current.objectId,
                 size = current.size.toLongOrNull() ?: file.size,
-                sha256 = current.sha256
+                sha256 = current.sha256,
+                baseVersion = current.version
             )
         }
         return SyncRunResult.SUCCESS
@@ -438,7 +457,16 @@ class SyncEngine(
                 return failUpload(current, "UPLOAD_INCOMPLETE", "服务端尚未完成上传合并")
             }
 
-            val isModify = current.baseVersion != null && current.baseVersion >= 1 &&
+            var baseVersion = current.baseVersion
+            if (!current.fileId.isNullOrBlank() && (baseVersion == null || baseVersion < 1)) {
+                // 索引行只有 fileId 却缺远端版本（补缺下载/改名遗留）：先取云端当前版本作为更新基线，
+                // 否则会被当作新建文件提交，被服务端以「同名文件已存在」拒绝。
+                when (val result = apiCall { api.getFileVersions(current.fileId!!, mapping.deviceId) }) {
+                    is ApiResult.Success -> baseVersion = result.data.versions.firstOrNull()?.version
+                    is ApiResult.Failure -> Unit
+                }
+            }
+            val isModify = baseVersion != null && baseVersion >= 1 &&
                 !current.fileId.isNullOrBlank()
             val operationType = if (isModify) "file_updated" else "file_created"
             val operation = when (
@@ -451,7 +479,7 @@ class SyncEngine(
                             type = operationType,
                             uploadId = upload.uploadId,
                             fileId = if (isModify) current.fileId else null,
-                            baseVersion = current.baseVersion ?: 0,
+                            baseVersion = baseVersion ?: 0,
                             newRelativePath = null
                         )
                     )
@@ -594,6 +622,10 @@ class SyncEngine(
         mappings: List<com.photosync.app.data.local.LocalFolderMapping>
     ): SyncRunResult {
         var since = repository.cursor(spaceId, deviceId)?.lastAppliedRevision ?: "0"
+        // 游标已越过的失败改名标记说明事件已确认，清掉旧版本遗留的失败记录。
+        runCatching { repository.deleteStaleFailedRenameTasks(spaceId, since) }
+        // 源文件已不存在的失败上传任务（并发同步被改名抢走等）也没有重试意义，一并清理。
+        runCatching { repository.deleteFailedUploadsWithoutLocalFile(spaceId) }
         setPhase("正在获取云端变更…")
         try {
             DecimalContract.revision(since)
@@ -1183,6 +1215,15 @@ class SyncEngine(
             }
             val oldIndex = repository.file(mapping.id, oldPlan.localRelativePath)
             if (oldIndex == null || oldIndex.remoteFileId != payload.fileId) {
+                // 旧路径已不存在：若新路径已绑定同一 fileId，说明重命名此前已生效
+                // （上次执行中断或旧版本遗留），补齐一条已完成的改名记录即可，避免游标永久阻塞。
+                val renamedIndex = repository.file(mapping.id, newPlan.localRelativePath)
+                if (renamedIndex?.remoteFileId == payload.fileId) {
+                    repository.getOrCreateEventMarkerTask(
+                        spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
+                        payload.fileId, event.revision, SyncTaskType.RENAME
+                    ).let { repository.completeTask(it) }
+                }
                 return SyncRunResult.SUCCESS
             }
             if (isLocalDiverged(mapping, oldIndex)) {
@@ -1194,6 +1235,70 @@ class SyncEngine(
                 return SyncRunResult.FAILURE
             }
             val newFileName = payload.newFileName ?: newPlan.localRelativePath.substringAfterLast('/')
+            val source = fileStore.findTarget(mapping, oldPlan.localRelativePath)
+            val target = fileStore.findTarget(mapping, newPlan.localRelativePath)
+            if (source == null || !source.isFile) {
+                // 旧路径的物理文件已不存在（例如同步期间在相册里删除了旧文件）。
+                // 此时绝不能删除新路径上的文件：若新路径已有同内容文件，说明改名实际已完成，
+                // 只修正索引；若新路径也没有文件，删除旧索引交给兜底下载恢复，避免误判为本地删除。
+                val targetDigest = if (target != null && target.isFile) {
+                    runCatching { fileStore.digest(target!!) }.getOrNull()
+                } else {
+                    null
+                }
+                if (target != null && target.isFile && targetDigest != null &&
+                    targetDigest.size == oldIndex.size &&
+                    (oldIndex.sha256.isNullOrBlank() || targetDigest.sha256.equals(oldIndex.sha256, true))
+                ) {
+                    repository.moveIndex(
+                        mappingId = mapping.id,
+                        oldRelativePath = oldPlan.localRelativePath,
+                        newRelativePath = newPlan.localRelativePath,
+                        newFileName = newFileName,
+                        fileId = payload.fileId,
+                        version = payload.version ?: (oldIndex.remoteVersion ?: 0) + 1,
+                        docUri = target.uri.toString(),
+                        size = target.length().coerceAtLeast(0L),
+                        sha256 = oldIndex.sha256 ?: targetDigest.sha256
+                    )
+                    repository.removeActiveTasksForPath(spaceId, mapping.id, oldPlan.localRelativePath)
+                    repository.removeActiveTasksForPath(spaceId, mapping.id, newPlan.localRelativePath)
+                    repository.getOrCreateEventMarkerTask(
+                        spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
+                        payload.fileId, event.revision, SyncTaskType.RENAME
+                    ).let { repository.completeTask(it) }
+                    return SyncRunResult.SUCCESS
+                }
+                if (target == null || !target.isFile) {
+                    // 两边都没有物理文件：移除旧索引，后续同步按云端清单重新下载，绝不传播删除。
+                    repository.deleteIndex(mapping.id, oldPlan.localRelativePath)
+                    repository.getOrCreateEventMarkerTask(
+                        spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
+                        payload.fileId, event.revision, SyncTaskType.RENAME
+                    ).let { repository.completeTask(it) }
+                    return SyncRunResult.SUCCESS
+                }
+                // 新路径被不同内容的文件占用：保留双方文件，标记冲突交给用户处理，
+                // 同时把旧索引改为冲突态，避免下次扫描把「旧文件丢失」当作本地删除同步到云端。
+                val conflictMarker = repository.getOrCreateEventMarkerTask(
+                    spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
+                    payload.fileId, event.revision, SyncTaskType.RENAME
+                )
+                repository.markTaskFailed(
+                    conflictMarker, "LOCAL_PATH_CONFLICT", "新路径已存在不同内容的文件，未执行远端重命名"
+                )
+                repository.markIndexStatus(mapping.id, oldPlan.localRelativePath, FileSyncStatus.CONFLICT)
+                return SyncRunResult.FAILURE
+            }
+            // 源文件存在时才允许清理新路径上的同名副本，避免误删唯一副本。
+            if (target != null && target.isFile) {
+                val knownSha = oldIndex.sha256
+                val digest = runCatching { fileStore.digest(target!!) }.getOrNull()
+                val sameContent = digest != null && digest.size == oldIndex.size &&
+                    (knownSha.isNullOrBlank() || digest.sha256.equals(knownSha, true))
+                if (!sameContent) throw LocalPathConflictException("目标文件已存在，不能覆盖：${newPlan.localRelativePath}")
+                fileStore.delete(mapping, newPlan.localRelativePath)
+            }
             val moved = fileStore.move(mapping, oldPlan.localRelativePath, newPlan.localRelativePath)
             repository.moveIndex(
                 mappingId = mapping.id,
@@ -1206,6 +1311,9 @@ class SyncEngine(
                 size = moved.length().coerceAtLeast(0L),
                 sha256 = oldIndex.sha256
             )
+            // 改名已生效：清理旧/新路径上残留的上传、下载任务，避免对已存在的云端文件重复上传。
+            repository.removeActiveTasksForPath(spaceId, mapping.id, oldPlan.localRelativePath)
+            repository.removeActiveTasksForPath(spaceId, mapping.id, newPlan.localRelativePath)
             repository.getOrCreateEventMarkerTask(
                 spaceId, mapping.id, newPlan.localRelativePath, newPlan.remoteRelativePath,
                 payload.fileId, event.revision, SyncTaskType.RENAME
@@ -1528,7 +1636,7 @@ class SyncEngine(
             if (current.objectId.isBlank() || current.version <= 0 || currentSha.isNullOrBlank()) {
                 return "云端版本信息无效"
             }
-            applyKeepCloud(file, mapping, fileId, current.objectId, current.size.toLongOrNull() ?: 0L, currentSha)
+            applyKeepCloud(file, mapping, fileId, current.objectId, current.size.toLongOrNull() ?: 0L, currentSha, current.version)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1592,7 +1700,7 @@ class SyncEngine(
                     if (remoteObjectId.isNullOrBlank() || remote.version <= 0 || remoteSha.isNullOrBlank()) {
                         "云端版本信息无效"
                     } else {
-                        applyKeepCloud(file, mapping, remote.fileId, remoteObjectId, remote.size, remoteSha)
+                        applyKeepCloud(file, mapping, remote.fileId, remoteObjectId, remote.size, remoteSha, remote.version)
                     }
                 }
             }
@@ -1610,7 +1718,8 @@ class SyncEngine(
         fileId: String,
         objectId: String,
         size: Long,
-        sha256: String
+        sha256: String,
+        version: Int
     ): String? {
         fileStore.findTarget(mapping, file.relativePath)?.let {
             if (!fileStore.moveToTrash(mapping, file.relativePath)) {
@@ -1627,7 +1736,8 @@ class SyncEngine(
                 fileId = fileId,
                 objectId = objectId,
                 size = size,
-                sha256 = sha256
+                sha256 = sha256,
+                baseVersion = version
             )
         }
         return null

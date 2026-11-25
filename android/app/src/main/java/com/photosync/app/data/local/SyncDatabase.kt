@@ -10,6 +10,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import com.photosync.app.data.sync.dedupeRemoteBindings
 import kotlinx.coroutines.flow.Flow
 
 /** 设备本地缓存（服务端设备表的镜像，标记本机） */
@@ -107,7 +108,7 @@ data class LocalFolderMapping(
     val createdAt: String?
 )
 
-data class MappingFileCount(val mappingId: String, val fileCount: Int)
+data class MappingFileCount(val mappingId: String, val fileCount: Int, val totalSize: Long)
 
 @Dao
 interface LocalFolderMappingDao {
@@ -150,7 +151,7 @@ interface LocalFolderMappingDao {
 
     @Query(
         """
-        SELECT m.id AS mappingId, COUNT(f.id) AS fileCount
+        SELECT m.id AS mappingId, COUNT(f.id) AS fileCount, COALESCE(SUM(f.size), 0) AS totalSize
         FROM local_folder_mappings m
         LEFT JOIN local_file_index f ON f.mappingId = m.id
         WHERE m.spaceId = :spaceId AND m.deviceId = :deviceId
@@ -218,7 +219,7 @@ interface LocalFileIndexDao {
     @Transaction
     suspend fun replaceAfterCompleteScan(mappingId: String, scannedFiles: List<LocalFileIndex>) {
         val previous = getByMapping(mappingId).associateBy { it.relativePath }
-        val merged = scannedFiles.map { file ->
+        val merged = dedupeRemoteBindings(scannedFiles.map { file ->
             val old = previous[file.relativePath]
             file.copy(
                 id = old?.id ?: 0,
@@ -226,7 +227,7 @@ interface LocalFileIndexDao {
                 remoteFileId = old?.remoteFileId,
                 remoteVersion = old?.remoteVersion
             )
-        }
+        })
         clearByMapping(mappingId)
         upsertAll(merged)
     }

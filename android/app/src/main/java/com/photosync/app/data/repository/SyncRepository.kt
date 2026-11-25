@@ -186,6 +186,21 @@ class SyncRepository(
         fileDao.deleteByPath(mappingId, relativePath)
     }
 
+    /** 仅调整索引行状态（不触碰任务），用于冲突保护等场景。 */
+    suspend fun markIndexStatus(mappingId: String, relativePath: String, status: String) {
+        fileDao.getByPath(mappingId, relativePath)?.let {
+            fileDao.upsert(it.copy(status = status))
+        }
+    }
+
+    /** 清理游标已越过但仍显示失败的改名标记（旧版本遗留）。 */
+    suspend fun deleteStaleFailedRenameTasks(spaceId: String, lastAppliedRevision: String) =
+        taskDao.deleteStaleFailedRenameTasks(spaceId, lastAppliedRevision)
+
+    /** 清理源文件已不存在的失败上传任务。 */
+    suspend fun deleteFailedUploadsWithoutLocalFile(spaceId: String) =
+        taskDao.deleteFailedUploadsWithoutLocalFile(spaceId)
+
     /** 远端 file_renamed 事件应用：把索引行从旧路径迁移到新路径并标记已同步。 */
     suspend fun moveIndex(
         mappingId: String,
@@ -373,7 +388,8 @@ class SyncRepository(
         fileId: String,
         objectId: String,
         size: Long,
-        sha256: String
+        sha256: String,
+        baseVersion: Int? = null
     ) {
         val remotePath = RemoteDownloadPlanner.remotePath(localPath)
         if (taskDao.countActiveTasks(spaceId, mappingId, remotePath) > 0) return
@@ -390,6 +406,7 @@ class SyncRepository(
             objectId = objectId,
             size = size,
             sha256 = sha256,
+            baseVersion = baseVersion,
             operationId = "",
             createdAt = now,
             updatedAt = now

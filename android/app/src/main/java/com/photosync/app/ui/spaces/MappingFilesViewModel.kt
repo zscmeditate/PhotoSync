@@ -99,7 +99,7 @@ class MappingFilesViewModel(
                 is ApiResult.Success -> {
                     _messages.emit("冲突已解决：${conflict.fileName}")
                     _conflicts.value = _conflicts.value - conflict.fileId
-                    SyncScheduler.enqueue(app, force = true)
+                    SyncScheduler.enqueue(app, force = true, spaceId = mapping.value?.spaceId)
                 }
                 is ApiResult.Failure -> _messages.emit(ErrorMessages.of(result))
             }
@@ -152,7 +152,7 @@ class MappingFilesViewModel(
             )
             if (error == null) {
                 _failureDetail.value = null
-                SyncScheduler.enqueue(app, force = true)
+                SyncScheduler.enqueue(app, force = true, spaceId = mapping.value?.spaceId)
             }
         }
     }

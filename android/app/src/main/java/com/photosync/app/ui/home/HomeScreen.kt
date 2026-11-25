@@ -1,7 +1,6 @@
 package com.photosync.app.ui.home
 
 import android.os.SystemClock
-import android.widget.Toast
 
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -45,12 +44,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -67,9 +68,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
+import com.photosync.app.BuildConfig
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.MappingStatus
 import com.photosync.app.data.local.SyncTaskType
+import com.photosync.app.ui.components.AppSnackbarHost
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.SectionHeader
 import com.photosync.app.ui.components.SyncStatus
@@ -86,6 +89,7 @@ import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 import com.photosync.app.ui.theme.SuccessGreen
 import com.photosync.app.ui.theme.WarningOrange
+import kotlinx.coroutines.launch
 
 enum class HomeTab(
     val label: String,
@@ -113,8 +117,10 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
         }
     }
 
-    // 首页是导航根页面：连续两次返回（间隔 2 秒内）才退出应用，第一次给轻量 Toast 提示。
+    // 首页是导航根页面：连续两次返回（间隔 2 秒内）才退出应用，第一次给轻量提示。
     val activityContext = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var lastBackAt by rememberSaveable { mutableStateOf(0L) }
     BackHandler {
         val now = SystemClock.elapsedRealtime()
@@ -122,7 +128,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
             (activityContext as? ComponentActivity)?.finishAffinity()
         } else {
             lastBackAt = now
-            Toast.makeText(activityContext, "再按一次退出应用", Toast.LENGTH_SHORT).show()
+            scope.launch { snackbarHostState.showSnackbar("再按一次退出应用") }
         }
     }
 
@@ -203,6 +209,7 @@ fun HomeScreen(navController: NavHostController, onLoggedOut: () -> Unit) {
                     onLoggedOut = onLoggedOut
                 )
             }
+            AppSnackbarHost(hostState = snackbarHostState, bottomPadding = 16.dp)
         }
     }
 }
@@ -234,11 +241,22 @@ private fun HomeOverviewTab(
     ) {
         // 顶部标题
         Column(modifier = Modifier.padding(vertical = 12.dp)) {
-            Text(
-                text = "同步精灵",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "同步精灵",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = BuildConfig.VERSION_NAME,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         // 总览状态卡片（灰底 + 绿色勾选，设计图样式）

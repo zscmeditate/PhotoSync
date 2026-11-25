@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -44,7 +47,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -54,6 +56,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -69,12 +72,14 @@ import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.local.LocalSyncTask
 import com.photosync.app.data.local.SyncTaskState
 import com.photosync.app.data.remote.JoinRequestDto
 import com.photosync.app.data.sync.SyncScheduler
+import com.photosync.app.ui.components.AppSnackbarHost
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SectionHeader
@@ -103,7 +108,7 @@ fun SpaceDetailScreen(
             syncRepository = app.container.syncRepository,
             syncEngine = app.container.syncEngine,
             apiClient = app.container.apiClient,
-            scheduleSync = { SyncScheduler.enqueue(app, force = true) },
+            scheduleSync = { SyncScheduler.enqueue(app, force = true, spaceId = spaceId) },
             spaceId = spaceId
         )
     }
@@ -120,7 +125,6 @@ fun SpaceDetailScreen(
     val detailTask by viewModel.detailTask.collectAsStateWithLifecycle()
     val resolvingTaskId by viewModel.resolvingTaskId.collectAsStateWithLifecycle()
     val syncing by viewModel.syncing.collectAsStateWithLifecycle()
-    val syncPhase by viewModel.syncPhase.collectAsStateWithLifecycle()
     val resolvingAllDuplicateNames by viewModel.resolvingAllDuplicateNames.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
@@ -130,6 +134,8 @@ fun SpaceDetailScreen(
     // 任务筛选：null = 全部；再点一次已选中的筛选可取消
     var taskFilter by rememberSaveable { mutableStateOf<TaskFilter?>(null) }
     var showClearConfirm by rememberSaveable { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
 
     val filteredTasks = remember(tasks, taskFilter) {
         tasks
@@ -201,13 +207,12 @@ fun SpaceDetailScreen(
                 title = space?.name ?: "空间详情",
                 onBack = onBack,
                 actions = {
-                    if (loading || syncing) {
-                        // 刷新中（含执行队列任务）显示转圈，且不可再点，避免无反馈的重复点击
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                    } else {
-                        IconButton(onClick = { viewModel.refresh(); viewModel.runQueuedTasks() }) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "刷新并执行待办任务")
-                        }
+                    // 刷新中/同步中不显示转圈，仅禁用按钮避免重复点击
+                    IconButton(
+                        onClick = { viewModel.refresh(); viewModel.runQueuedTasks() },
+                        enabled = !loading && !syncing
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "刷新并执行待办任务")
                     }
                     // 只有管理员（owner/admin；本账号主设备自动具备管理员角色）才可以重命名空间
                     if (space?.role == "admin" || space?.role == "owner") {
@@ -224,8 +229,15 @@ fun SpaceDetailScreen(
                 }
             } else {
                 val latestScan = mappings.mapNotNull { it.lastScannedAt }.maxOrNull()
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
+                // 「同步任务」标题在列表中的位置：加入申请区块 + 同步按钮 + 快捷入口 + 本地目录标题 + 目录项
+                val joinSectionSize = if (canManageMembers && joinRequests.isNotEmpty()) 1 + joinRequests.size else 0
+                val taskHeaderIndex = joinSectionSize + 3 + (if (mappings.isEmpty()) 1 else mappings.size)
+                BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                    // 任务区至少一屏高：筛选后内容很少时「同步任务」标题仍能滚到最顶部，不会被拉回
+                    val taskSectionMinHeight = maxHeight
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -246,9 +258,8 @@ fun SpaceDetailScreen(
                                 mappings.isNotEmpty() -> {
                                     PrimaryButton(
                                         text = when {
-                                            // 实时显示引擎当前阶段（扫描/上传/下载/拉取云端变更）
-                                            syncing -> syncPhase ?: "正在同步…"
-                                            syncStats.runningTasks > 0 -> "正在同步…"
+                                            // 按钮只给简洁状态，具体阶段（扫描/上传/下载/应用云端变更）不体现在文案里
+                                            syncing || syncStats.runningTasks > 0 -> "正在同步…"
                                             else -> "立即同步"
                                         },
                                         onClick = viewModel::syncNow,
@@ -339,9 +350,11 @@ fun SpaceDetailScreen(
                         }
                     } else {
                         items(mappings, key = { it.id }) { mapping ->
+                            val counts = fileCounts.firstOrNull { it.mappingId == mapping.id }
                             FolderMappingCard(
                                 mapping = mapping,
-                                fileCount = fileCounts.firstOrNull { it.mappingId == mapping.id }?.fileCount ?: 0,
+                                fileCount = counts?.fileCount ?: 0,
+                                totalSize = counts?.totalSize ?: 0L,
                                 onOpenFiles = { onOpenMapping(mapping.id) },
                                 onChangeDirectory = {
                                     changeTarget = mapping
@@ -382,6 +395,8 @@ fun SpaceDetailScreen(
                                     selected = taskFilter == filter,
                                     onClick = {
                                         taskFilter = if (taskFilter == filter) null else filter
+                                        // 每次点筛选都把「同步任务」标题滚到最顶部，直接看到筛选结果
+                                        scope.launch { listState.animateScrollToItem(taskHeaderIndex) }
                                     },
                                     label = {
                                         val count = when (filter) {
@@ -422,18 +437,39 @@ fun SpaceDetailScreen(
                             }
                         }
                     }
-                    if (filteredTasks.isEmpty()) {
+                    if (filteredTasks.size <= 20) {
+                        // 内容较少：任务区整体撑到至少一屏高，避免筛选后「同步任务」标题被拉回；
+                        // 数量小可以直接组合。超过 20 条时内容本身就超过一屏，继续用惰性列表。
                         item {
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.fillMaxWidth()
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = taskSectionMinHeight),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                EmptyStateView(
-                                    icon = Icons.Filled.Sync,
-                                    title = "暂无同步任务",
-                                    subtitle = "该空间的同步任务会在此列出，可按 进行中 / 成功 / 失败 筛选"
-                                )
+                                if (filteredTasks.isEmpty()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        EmptyStateView(
+                                            icon = Icons.Filled.Sync,
+                                            title = "暂无同步任务",
+                                            subtitle = "该空间的同步任务会在此列出，可按 进行中 / 成功 / 失败 筛选"
+                                        )
+                                    }
+                                } else {
+                                    filteredTasks.forEachIndexed { index, task ->
+                                        SyncTaskCard(
+                                            order = index + 1,
+                                            task = task,
+                                            resolving = resolvingTaskId == task.id,
+                                            onCancel = { viewModel.cancelTask(task) },
+                                            onShowDetail = { viewModel.openTaskFailureDetail(task) }
+                                        )
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -449,9 +485,10 @@ fun SpaceDetailScreen(
                     }
                     item { Spacer(Modifier.height(12.dp)) }
                 }
+                }
             }
         }
-        SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
+        AppSnackbarHost(hostState = snackbarHostState)
     }
 
     if (showClearConfirm) {
@@ -632,6 +669,7 @@ private fun JoinRequestCard(
 private fun FolderMappingCard(
     mapping: LocalFolderMapping,
     fileCount: Int,
+    totalSize: Long,
     onOpenFiles: () -> Unit,
     onChangeDirectory: () -> Unit
 ) {
@@ -656,7 +694,7 @@ private fun FolderMappingCard(
                 MappingStatusChip(mapping.status)
             }
             Text(
-                text = "空间根目录 · $fileCount 个文件 · ${if (mapping.onlyMedia) "仅照片和视频" else "全部文件"}",
+                text = "空间根目录 · $fileCount 个文件 · ${formatFileSize(totalSize)} · ${if (mapping.onlyMedia) "仅照片和视频" else "全部文件"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = OnSurfaceMuted,
                 modifier = Modifier.padding(top = 6.dp)

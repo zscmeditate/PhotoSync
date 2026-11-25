@@ -190,6 +190,47 @@ sealed class LocalChange {
 }
 
 /**
+ * 同一映射内一个云端文件只能对应一条本地索引。
+ * 历史遗留（如“重命名”与本地复制并存）会让两条本地记录共享同一个 remoteFileId，
+ * 表现为「本地数量 > 云端数量」。这里保留绑定更可信的一条（有远端版本优先，
+ * 其次 id 更早），其余重置为待上传，由后续同步作为新文件上传。
+ */
+fun dedupeRemoteBindings(files: List<LocalFileIndex>): List<LocalFileIndex> {
+    val keptIndexByFileId = HashMap<String, Int>()
+    val result = files.toMutableList()
+    files.forEachIndexed { index, file ->
+        val fileId = file.remoteFileId ?: return@forEachIndexed
+        val keptIndex = keptIndexByFileId[fileId]
+        if (keptIndex == null) {
+            keptIndexByFileId[fileId] = index
+            return@forEachIndexed
+        }
+        val kept = result[keptIndex]
+        if (prefersBinding(file, kept)) {
+            result[keptIndex] = kept.resetRemoteBinding()
+            result[index] = file
+            keptIndexByFileId[fileId] = index
+        } else {
+            result[index] = file.resetRemoteBinding()
+        }
+    }
+    return result
+}
+
+private fun prefersBinding(candidate: LocalFileIndex, kept: LocalFileIndex): Boolean {
+    val candidateVersioned = candidate.remoteVersion != null
+    val keptVersioned = kept.remoteVersion != null
+    if (candidateVersioned != keptVersioned) return candidateVersioned
+    return candidate.id != 0L && (kept.id == 0L || candidate.id < kept.id)
+}
+
+private fun LocalFileIndex.resetRemoteBinding(): LocalFileIndex = copy(
+    status = FileSyncStatus.PENDING_UPLOAD,
+    remoteFileId = null,
+    remoteVersion = null
+)
+
+/**
  * 比较扫描前的索引快照与扫描后的索引，产出需要执行的本地变更。
  * 仅对状态为 SYNCED 且有 remoteFileId 的文件感知修改/删除；本地仅有文件由 UploadNew 覆盖。
  * 重命名通过内容（sha256 + size）唯一配对识别，配对不唯一时回退为删除 + 新增上传。
