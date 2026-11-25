@@ -56,6 +56,10 @@ interface ApiService {
     @DELETE("api/v1/devices/{deviceId}")
     suspend fun deleteDevice(@Path("deviceId") deviceId: String): Response<Unit>
 
+    /** 主设备把已移除设备从列表清理（记录保留，重新申请会再次出现） */
+    @DELETE("api/v1/devices/{deviceId}/record")
+    suspend fun purgeRemovedDevice(@Path("deviceId") deviceId: String): Response<Unit>
+
     /** 将本机（X-Device-Id）设为主设备；已有主设备时返回 409 */
     @POST("api/v1/devices/primary")
     suspend fun claimPrimaryDevice(): Response<DeviceResponse>

@@ -173,6 +173,28 @@ class DeviceListViewModel(
         }
     }
 
+    /** 主设备把已移除设备从列表清理（记录保留，该设备重新申请时会再次出现）。 */
+    fun purgeRemovedDevice(deviceId: String) {
+        if (_actionInProgress.value) return
+        viewModelScope.launch {
+            _actionInProgress.value = true
+            when (val result = deviceRepository.purgeRemovedDevice(deviceId)) {
+                is ApiResult.Success -> _messages.emit("已从列表清理该设备")
+                is ApiResult.Failure -> {
+                    deviceRepository.refreshDevices()
+                    _messages.emit(
+                        if (result.code == "DEVICE_NOT_PRIMARY") {
+                            "只有主设备才能清理设备列表"
+                        } else {
+                            "清理失败：${result.message}"
+                        }
+                    )
+                }
+            }
+            _actionInProgress.value = false
+        }
+    }
+
     /** 主设备移除从设备。 */
     fun removeDevice(deviceId: String) {
         if (_actionInProgress.value) return

@@ -90,6 +90,7 @@ fun DeviceListScreen() {
 
     var renameTarget by remember { mutableStateOf<LocalDevice?>(null) }
     var removeTarget by remember { mutableStateOf<LocalDevice?>(null) }
+    var purgeTarget by remember { mutableStateOf<LocalDevice?>(null) }
 
     val primaryDevice = devices.firstOrNull { it.isPrimary }
     val thisDevice = devices.firstOrNull { it.isThisDevice }
@@ -188,6 +189,7 @@ fun DeviceListScreen() {
                                 busy = actionInProgress,
                                 onRename = { renameTarget = device },
                                 onRemove = { removeTarget = device },
+                                onPurge = { purgeTarget = device },
                                 onApproveRejoin = { viewModel.approveRejoin(device.id) },
                                 onRejectRejoin = { viewModel.rejectRejoin(device.id) }
                             )
@@ -219,6 +221,17 @@ fun DeviceListScreen() {
                 removeTarget = null
             },
             onDismiss = { removeTarget = null }
+        )
+    }
+
+    purgeTarget?.let { device ->
+        PurgeDeviceDialog(
+            device = device,
+            onConfirm = {
+                viewModel.purgeRemovedDevice(device.id)
+                purgeTarget = null
+            },
+            onDismiss = { purgeTarget = null }
         )
     }
 }
@@ -336,6 +349,35 @@ private fun RemoveDeviceDialog(
     )
 }
 
+/** 从列表清理已移除设备确认：仅主设备可见，清理后该设备重新申请时会再次出现。 */
+@Composable
+private fun PurgeDeviceDialog(
+    device: LocalDevice,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("从列表删除") },
+        text = {
+            Text(
+                "确定把「${device.deviceName}」从设备列表删除吗？删除后不再显示该设备，它重新申请加入时会再次出现在列表里。",
+                color = OnSurfaceMuted
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("删除", fontWeight = FontWeight.Bold, color = ErrorRed)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = OnSurfaceMuted)
+            }
+        }
+    )
+}
+
 /** 被移除设备的状态行：显示“被移除”，有待处理申请时附带提示。 */
 @Composable
 private fun RemovedStatusRow(requested: Boolean) {
@@ -371,6 +413,7 @@ private fun DeviceCard(
     busy: Boolean,
     onRename: () -> Unit,
     onRemove: () -> Unit,
+    onPurge: () -> Unit,
     onApproveRejoin: () -> Unit,
     onRejectRejoin: () -> Unit
 ) {
@@ -378,6 +421,8 @@ private fun DeviceCard(
     val removed = device.credentialStatus == "revoked"
     // 只有主设备可以移除其它从设备；不能移除自己或主设备
     val canRemove = viewerIsPrimary && !removed && !device.isThisDevice && !device.isPrimary
+    // 已移除的设备只能由主设备从列表中清理
+    val canPurge = viewerIsPrimary && removed && !device.isThisDevice
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -493,7 +538,7 @@ private fun DeviceCard(
                 }
             }
 
-            if (!removed) {
+            if (!removed || canPurge) {
                 Box {
                     IconButton(onClick = { menuExpanded = true }) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
@@ -527,6 +572,23 @@ private fun DeviceCard(
                                 onClick = {
                                     menuExpanded = false
                                     onRemove()
+                                }
+                            )
+                        }
+                        if (canPurge) {
+                            DropdownMenuItem(
+                                text = { Text("从列表删除", color = ErrorRed) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = null,
+                                        tint = ErrorRed
+                                    )
+                                },
+                                enabled = !busy,
+                                onClick = {
+                                    menuExpanded = false
+                                    onPurge()
                                 }
                             )
                         }

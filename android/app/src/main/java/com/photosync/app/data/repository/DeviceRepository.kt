@@ -86,6 +86,17 @@ class DeviceRepository(
         }
     }
 
+    /** 主设备把已移除设备的记录从列表中清理（重新申请时会再次出现）。 */
+    suspend fun purgeRemovedDevice(deviceId: String): ApiResult<Unit> {
+        return when (val result = apiCall { apiClient.api.purgeRemovedDevice(deviceId) }) {
+            is ApiResult.Success -> {
+                refreshDevices()
+                ApiResult.Success(Unit)
+            }
+            is ApiResult.Failure -> result
+        }
+    }
+
     /** 被移除的本机申请重新加入，需等待主设备同意。 */
     suspend fun requestRejoin(): ApiResult<Unit> {
         return when (val result = apiCall { apiClient.api.requestRejoinDevice() }) {

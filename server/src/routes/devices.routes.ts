@@ -265,6 +265,39 @@ const devicesRoutes: FastifyPluginAsync<DevicesRoutesOptions> = async (app, opts
     },
   );
 
+  app.delete(
+    '/devices/:deviceId/record',
+    {
+      preHandler: auth,
+      schema: {
+        tags: ['devices'],
+        summary: '主设备把已移除设备从列表清理',
+        security: bearerSecurity,
+        params: {
+          type: 'object',
+          required: ['deviceId'],
+          properties: { deviceId: { type: 'string', description: '设备 UUID' } },
+        },
+        response: {
+          400: errorResponses[400],
+          401: errorResponses[401],
+          403: errorResponses[403],
+          404: errorResponses[404],
+          500: errorResponses[500],
+        },
+      },
+    },
+    async (request: FastifyRequest, reply) => {
+      const deviceId = parseDeviceId(request.params);
+      await deviceService.purgeRemoved(
+        authUserId(request),
+        requestDeviceId(request),
+        deviceId,
+      );
+      return reply.status(204).send();
+    },
+  );
+
   app.patch(
     '/devices/:deviceId',
     {

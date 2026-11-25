@@ -210,17 +210,40 @@ export class DeviceService {
   /**
    * 被移除的设备发起重新加入申请（幂等）。
    * 只有 revoked 设备需要申请；申请后由主设备决定同意或拒绝。
+   * 已被主设备从列表清理的设备重新申请时回到列表，便于主设备审批。
    */
   async requestRejoin(userId: string, deviceId: string): Promise<DeviceDto> {
     const device = await this.requireOwnedDevice(userId, deviceId);
     if (device.credentialStatus !== 'revoked') {
       throw validationError('Only a removed device can request to rejoin');
     }
-    const updated = device.rejoinRequestedAt
-      ? device
-      : await this.deps.devices.update(device.id, { rejoinRequestedAt: this.now() });
+    const updated = await this.deps.devices.update(device.id, {
+      rejoinRequestedAt: device.rejoinRequestedAt ?? this.now(),
+      loggedOutAt: null,
+    });
     const primaryDeviceId = await this.deps.devices.findPrimaryDeviceId(userId);
     return toDeviceDto(updated, primaryDeviceId);
+  }
+
+  /**
+   * 主设备把已移除设备的记录从列表中清理掉。
+   * 只写 loggedOutAt 做软清理：保留设备记录与同步历史，避免硬删除级联清空历史数据；
+   * 该设备再次登记或申请重新加入时会重新出现在列表。
+   */
+  async purgeRemoved(userId: string, requestDeviceId: string, deviceId: string): Promise<void> {
+    const device = await this.requireOwnedDevice(userId, deviceId);
+    await this.requirePrimary(userId, requestDeviceId);
+    if (device.id === requestDeviceId) {
+      throw validationError('Primary device cannot clear its own record');
+    }
+    if (device.credentialStatus !== 'revoked') {
+      throw validationError('Only a removed device can be cleared from the list');
+    }
+    await this.deps.devices.update(device.id, {
+      loggedOutAt: this.now(),
+      rejoinRequestedAt: null,
+    });
+    this.touchedAt.delete(device.id);
   }
 
   /** 由主设备同意被移除设备重新加入：恢复为 active 并重新加入空间。 */

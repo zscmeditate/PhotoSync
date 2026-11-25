@@ -208,6 +208,73 @@ describe('DeviceService rejoin', () => {
   });
 });
 
+describe('DeviceService.purgeRemoved', () => {
+  async function makeRevokedSecondary() {
+    const ctx = makeService();
+    const primary = await ctx.service.register('user-1', 'Primary');
+    const secondary = await ctx.service.register('user-1', 'Phone A');
+    await ctx.service.claimPrimary('user-1', primary.id);
+    await ctx.service.revoke('user-1', primary.id, secondary.id);
+    return { ...ctx, primary, secondary };
+  }
+
+  it('hides a removed device from the list without deleting its record', async () => {
+    const { service, devices, primary, secondary } = await makeRevokedSecondary();
+
+    await service.purgeRemoved('user-1', primary.id, secondary.id);
+
+    const list = await service.list('user-1');
+    expect(list.map((device) => device.id)).not.toContain(secondary.id);
+    // 记录仍保留，只做软清理
+    expect(devices.items.get(secondary.id)?.loggedOutAt).not.toBeNull();
+  });
+
+  it('brings the device back to the list when it requests to rejoin', async () => {
+    const { service, primary, secondary } = await makeRevokedSecondary();
+    await service.purgeRemoved('user-1', primary.id, secondary.id);
+
+    await service.requestRejoin('user-1', secondary.id);
+
+    const list = await service.list('user-1');
+    const restored = list.find((device) => device.id === secondary.id);
+    expect(restored?.credentialStatus).toBe('revoked');
+    expect(restored?.isRejoinRequested).toBe(true);
+  });
+
+  it('rejects purging by a non-primary device', async () => {
+    const { service, secondary } = await makeRevokedSecondary();
+
+    await expectAppError(
+      () => service.purgeRemoved('user-1', secondary.id, secondary.id),
+      403,
+      'DEVICE_NOT_PRIMARY',
+    );
+  });
+
+  it('rejects purging an active device', async () => {
+    const { service } = makeService();
+    const primary = await service.register('user-1', 'Primary');
+    const secondary = await service.register('user-1', 'Phone A');
+    await service.claimPrimary('user-1', primary.id);
+
+    await expectAppError(
+      () => service.purgeRemoved('user-1', primary.id, secondary.id),
+      400,
+      'VALIDATION_ERROR',
+    );
+  });
+
+  it('rejects the primary device purging its own record', async () => {
+    const { service, primary } = await makeRevokedSecondary();
+
+    await expectAppError(
+      () => service.purgeRemoved('user-1', primary.id, primary.id),
+      400,
+      'VALIDATION_ERROR',
+    );
+  });
+});
+
 describe('DeviceService.revoke', () => {
   it('lets the primary device revoke a secondary device and its refresh tokens', async () => {
     const { service, refreshTokens } = makeService();
