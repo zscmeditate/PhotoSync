@@ -77,6 +77,8 @@ data class LocalSyncCursor(
 data class SyncTaskStats(
     val pendingUploads: Int = 0,
     val pendingDownloads: Int = 0,
+    val pendingUploadBytes: Long = 0,
+    val pendingDownloadBytes: Long = 0,
     val pendingMutations: Int = 0,
     val pendingDeletes: Int = 0,
     val pendingRenames: Int = 0,
@@ -93,6 +95,8 @@ interface LocalSyncTaskDao {
         SELECT
             COALESCE(SUM(CASE WHEN type = 'UPLOAD' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingUploads,
             COALESCE(SUM(CASE WHEN type = 'DOWNLOAD' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDownloads,
+            COALESCE(SUM(CASE WHEN type = 'UPLOAD' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN size ELSE 0 END), 0) AS pendingUploadBytes,
+            COALESCE(SUM(CASE WHEN type = 'DOWNLOAD' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN size ELSE 0 END), 0) AS pendingDownloadBytes,
             COALESCE(SUM(CASE WHEN type IN ('DELETE', 'RENAME') AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingMutations,
             COALESCE(SUM(CASE WHEN type = 'DELETE' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingDeletes,
             COALESCE(SUM(CASE WHEN type = 'RENAME' AND state IN ('PENDING', 'RUNNING', 'RETRY') THEN 1 ELSE 0 END), 0) AS pendingRenames,
@@ -265,6 +269,18 @@ interface LocalSyncTaskDao {
 
     @Query("UPDATE local_sync_tasks SET state = 'PENDING', error = NULL, updatedAt = :now WHERE spaceId = :spaceId AND state = 'RUNNING'")
     suspend fun recoverRunning(spaceId: String, now: Long)
+
+    /**
+     * 进程重启后，上次进程留下的 RUNNING 任务已不可能继续（传输进度只会在运行中被更新），
+     * 退回队列，避免界面把陈旧任务一直显示成「进行中」。仅处理本进程启动前更新的行，不影响正在执行的任务。
+     */
+    @Query(
+        """
+        UPDATE local_sync_tasks SET state = 'PENDING', error = NULL, updatedAt = :now
+        WHERE state = 'RUNNING' AND updatedAt < :processStartAt
+        """
+    )
+    suspend fun recoverStaleRunning(processStartAt: Long, now: Long)
 
     // 远端对象已永久丢失的任务重试也必然失败，保留 FAILED 状态供用户查看/取消，避免反复入队。
     @Query(

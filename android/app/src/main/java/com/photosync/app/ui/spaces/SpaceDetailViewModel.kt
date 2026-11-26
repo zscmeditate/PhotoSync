@@ -2,6 +2,7 @@ package com.photosync.app.ui.spaces
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.photosync.app.data.local.LocalDevice
 import com.photosync.app.data.local.LocalFolderMapping
 import com.photosync.app.data.local.LocalSpace
 import com.photosync.app.data.local.LocalSyncTask
@@ -11,6 +12,7 @@ import com.photosync.app.data.local.SyncTaskStats
 import com.photosync.app.data.local.SyncTaskType
 import com.photosync.app.data.remote.ApiResult
 import com.photosync.app.data.remote.JoinRequestDto
+import com.photosync.app.data.remote.SpaceMemberDto
 import com.photosync.app.data.remote.ApiClient
 import com.photosync.app.data.repository.DeviceRepository
 import com.photosync.app.data.repository.SpaceRepository
@@ -307,10 +309,22 @@ class SpaceDetailViewModel(
     private val _storageStats = MutableStateFlow<StorageStatsUiState?>(null)
     val storageStats: StateFlow<StorageStatsUiState?> = _storageStats.asStateFlow()
 
-    /** 只有主设备可以审批加入申请。 */
+    /** 只有主设备可以审批加入申请与管理参与设备。 */
     val canManageMembers: StateFlow<Boolean> = deviceRepository.devices
         .map { list -> list.any { it.isThisDevice && it.isPrimary } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** 当前空间的参与设备，在空间详情 Tab 中展示。 */
+    private val _members = MutableStateFlow<List<SpaceMemberDto>>(emptyList())
+    val members: StateFlow<List<SpaceMemberDto>> = _members.asStateFlow()
+
+    /** 参与设备管理弹层需要本账号完整设备列表。 */
+    val devices: StateFlow<List<LocalDevice>> = deviceRepository.devices
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** 正在加入/移出的设备，防止重复提交。 */
+    private val _membershipChanging = MutableStateFlow<String?>(null)
+    val membershipChanging: StateFlow<String?> = _membershipChanging.asStateFlow()
 
     /** 主设备看到的待审批加入申请。 */
     private val _joinRequests = MutableStateFlow<List<JoinRequestDto>>(emptyList())
@@ -343,9 +357,9 @@ class SpaceDetailViewModel(
     }
 
     private suspend fun loadRemote() {
-        // 空间详情与目录映射刷新；成员展示已移到空间列表页
+        // 空间详情、目录映射与参与设备一起刷新
         when (val result = spaceRepository.refreshSpace(spaceId)) {
-            is ApiResult.Success -> Unit
+            is ApiResult.Success -> _members.value = result.data
             is ApiResult.Failure -> _messages.emit(result.message)
         }
     }
@@ -538,18 +552,48 @@ class SpaceDetailViewModel(
         }
     }
 
-    /** 从设备退出空间：移出本机设备。 */
-    fun exitSpace() {
-        val deviceId = currentDeviceId ?: return
+    /** 管理参与设备：勾选加入或移出本账号下的设备。 */
+    fun setMembership(deviceId: String, join: Boolean) {
+        if (_membershipChanging.value != null) return
         viewModelScope.launch {
-            when (val result = spaceRepository.removeMember(spaceId, deviceId)) {
-                is ApiResult.Success -> {
-                    _messages.emit("已退出空间，本机目录绑定已解除")
-                    loadRemote()
+            _membershipChanging.value = deviceId
+            try {
+                val result = if (join) {
+                    spaceRepository.addMember(spaceId, deviceId)
+                } else {
+                    spaceRepository.removeMember(spaceId, deviceId)
                 }
-                is ApiResult.Failure -> _messages.emit("成员变更失败：${result.message}")
+                when (result) {
+                    is ApiResult.Success -> {
+                        val deviceName = devices.value.firstOrNull { it.id == deviceId }?.deviceName
+                        val isSelf = deviceId == currentDeviceId
+                        _messages.emit(
+                            when {
+                                join && isSelf -> "本机已加入空间，请进入空间绑定本地目录"
+                                join -> "已将「${deviceName ?: "该设备"}」加入空间"
+                                isSelf -> "已退出空间，本机目录绑定已解除"
+                                else -> "已将「${deviceName ?: "该设备"}」移出空间，其目录绑定已解除"
+                            }
+                        )
+                        if (isSelf && !join) {
+                            _members.value = emptyList()
+                            spaceRepository.refreshSpaces()
+                        } else {
+                            val refreshed = spaceRepository.loadMembers(spaceId)
+                            if (refreshed is ApiResult.Success) _members.value = refreshed.data
+                        }
+                    }
+                    is ApiResult.Failure -> _messages.emit("成员变更失败：${result.message}")
+                }
+            } finally {
+                _membershipChanging.value = null
             }
         }
+    }
+
+    /** 从设备退出空间：移出本机设备。 */
+    fun exitSpace() {
+        currentDeviceId?.let { setMembership(it, false) }
     }
 }
 

@@ -72,15 +72,9 @@ fun SpaceListScreen(
     val canCreateSpace by viewModel.canCreateSpace.collectAsStateWithLifecycle()
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val loadError by viewModel.loadError.collectAsStateWithLifecycle()
-    val membersBySpace by viewModel.membersBySpace.collectAsStateWithLifecycle()
     val spaceFileCounts by viewModel.spaceFileCounts.collectAsStateWithLifecycle()
-    val devices by viewModel.devices.collectAsStateWithLifecycle()
-    val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
-    val membershipChanging by viewModel.membershipChanging.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var deleteTarget by remember { mutableStateOf<LocalSpace?>(null) }
-    var manageSpaceId by remember { mutableStateOf<String?>(null) }
-    var exitTarget by remember { mutableStateOf<LocalSpace?>(null) }
     // 正在为哪个空间选头像：系统照片选择器返回后据此落入对应的空间
     var coverTarget by remember { mutableStateOf<LocalSpace?>(null) }
     val coverPicker = rememberLauncherForActivityResult(
@@ -169,13 +163,19 @@ fun SpaceListScreen(
                     ) {
                         if (hasJoinedSpaces) {
                             item {
-                                PrimaryButton(
-                                    text = "立即同步所有空间",
-                                    onClick = {
-                                        viewModel.syncAll { SyncScheduler.enqueue(app, force = true, spaceId = null) }
-                                    },
-                                    leadingIcon = Icons.Filled.Sync
-                                )
+                                Box(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    PrimaryButton(
+                                        text = "立即同步所有空间",
+                                        onClick = {
+                                            viewModel.syncAll { SyncScheduler.enqueue(app, force = true, spaceId = null) }
+                                        },
+                                        leadingIcon = Icons.Filled.Sync,
+                                        modifier = Modifier.fillMaxWidth(0.7f)
+                                    )
+                                }
                             }
                         }
                         items(displaySpaces, key = { it.id }) { space ->
@@ -186,12 +186,6 @@ fun SpaceListScreen(
                                 space = space,
                                 hasError = space.id in abnormalSpaceIds,
                                 fileCount = spaceFileCounts[space.id] ?: 0,
-                                members = membersBySpace[space.id].orEmpty(),
-                                showParticipants = joined,
-                                thisDeviceId = viewModel.currentDeviceId,
-                                canManageMembers = canManageMembers && joined,
-                                onManageMembers = if (joined) ({ manageSpaceId = space.id }) else null,
-                                onExitSpace = if (joined) ({ exitTarget = space }) else null,
                                 onChangeCover = if (canEditCover) ({
                                     coverTarget = space
                                     coverPicker.launch(
@@ -221,26 +215,4 @@ fun SpaceListScreen(
         )
     }
 
-    manageSpaceId?.let { spaceId ->
-        MemberManageDialog(
-            devices = devices,
-            members = membersBySpace[spaceId].orEmpty(),
-            changingDeviceId = membershipChanging,
-            onCheckedChange = { deviceId, join -> viewModel.setMembership(spaceId, deviceId, join) },
-            onDismiss = { manageSpaceId = null }
-        )
-    }
-
-    exitTarget?.let { space ->
-        ConfirmBottomSheet(
-            title = "退出空间",
-            message = "确定让本机退出「${space.name}」？本机目录绑定会被解除，云端文件不受影响。",
-            confirmText = "退出空间",
-            onConfirm = {
-                viewModel.currentDeviceId?.let { viewModel.setMembership(space.id, it, false) }
-                exitTarget = null
-            },
-            onDismiss = { exitTarget = null }
-        )
-    }
 }

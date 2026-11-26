@@ -20,6 +20,7 @@ import com.photosync.app.data.repository.SyncRepository
 import com.photosync.app.data.sync.FolderScanner
 import com.photosync.app.data.sync.SafFileStore
 import com.photosync.app.data.sync.SyncEngine
+import com.photosync.app.data.sync.SyncProgressNotifier
 import com.photosync.app.data.sync.SyncRealtimeClient
 import com.photosync.app.util.systemDeviceName
 
@@ -79,6 +80,12 @@ class AppContainer(context: Context) {
     val syncEngine = SyncEngine(
         repository = syncRepository,
         fileStore = SafFileStore(context.applicationContext)
+    )
+
+    val syncProgressNotifier = SyncProgressNotifier(
+        context = context.applicationContext,
+        repository = syncRepository,
+        engine = syncEngine
     )
 
     val syncRealtimeClient = SyncRealtimeClient(

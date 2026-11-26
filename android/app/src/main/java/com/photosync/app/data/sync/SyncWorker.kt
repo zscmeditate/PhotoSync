@@ -9,6 +9,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
@@ -16,6 +17,10 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.prefs.SettingsRepository
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 /** Room 任务与 WorkManager 请求均可跨进程重启恢复。 */
@@ -37,17 +42,45 @@ class SyncWorker(
         // 实时提示触发的同步只处理远端变更，跳过本地目录扫描，避免目录状态反复翻转。
         val skipLocalScan = inputData.getBoolean(KEY_SKIP_LOCAL_SCAN, false)
         val engine = app.container.syncEngine
-        return when (
-            val result = if (spaceId.isNullOrBlank()) {
-                engine.syncAll(skipLocalScan)
-            } else {
-                engine.syncSpace(spaceId, skipLocalScan)
+        val notifier = app.container.syncProgressNotifier
+        notifier.onWorkerStarted()
+        try {
+            return coroutineScope {
+                // 有实际传输任务时把自身提升为前台服务，避免后台被系统冻结/回收；
+                // 没有任务（空跑一轮）就不提升，避免每几秒一条通知。
+                val foregroundJob = launch {
+                    notifier.foreground.filterNotNull().collect { notification ->
+                        // 提升失败不应影响同步本身（例如通知被系统限制），仅失去后台保活
+                        runCatching { setForeground(notifier.asForegroundInfo(notification)) }
+                    }
+                }
+                try {
+                    when (
+                        val result = if (spaceId.isNullOrBlank()) {
+                            engine.syncAll(skipLocalScan)
+                        } else {
+                            engine.syncSpace(spaceId, skipLocalScan)
+                        }
+                    ) {
+                        SyncRunResult.SUCCESS -> Result.success()
+                        SyncRunResult.RETRY -> Result.retry()
+                        SyncRunResult.FAILURE -> Result.failure()
+                    }
+                } finally {
+                    foregroundJob.cancelAndJoin()
+                }
             }
-        ) {
-            SyncRunResult.SUCCESS -> Result.success()
-            SyncRunResult.RETRY -> Result.retry()
-            SyncRunResult.FAILURE -> Result.failure()
+        } finally {
+            notifier.onWorkerFinished()
         }
+    }
+
+    /** WorkManager 需要前台信息时使用当前进度通知，没有进度时退回「正在检查」。 */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        val notifier = (applicationContext as? PhotoSyncApp)?.container?.syncProgressNotifier
+            ?: return super.getForegroundInfo()
+        return notifier.foreground.value?.let { notifier.asForegroundInfo(it) }
+            ?: notifier.idleForegroundInfo()
     }
 
     companion object {

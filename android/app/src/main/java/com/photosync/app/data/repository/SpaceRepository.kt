@@ -284,7 +284,7 @@ class SpaceRepository(
         }
     }
 
-    /** 轻量加载空间成员：只拉空间详情，不拉目录映射（空间列表页展示参与设备用）。 */
+    /** 轻量加载空间成员：只拉空间详情，不拉目录映射（成员变更后刷新参与设备用）。 */
     suspend fun loadMembers(spaceId: String): ApiResult<List<SpaceMemberDto>> {
         val deviceId = currentDeviceId()
             ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")

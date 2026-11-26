@@ -49,7 +49,18 @@ android {
         versionName = appVersionName
     }
 
+    // 统一签名：使用项目内置的 debug.keystore（默认密码 android），
+    // 保证任意电脑打包出的 debug 包签名一致，可直接覆盖安装。
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

@@ -4,11 +4,17 @@ import android.os.SystemClock
 
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -60,9 +66,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,7 +81,9 @@ import androidx.navigation.NavHostController
 import com.photosync.app.BuildConfig
 import com.photosync.app.PhotoSyncApp
 import com.photosync.app.data.local.MappingStatus
+import com.photosync.app.data.local.SyncTaskStats
 import com.photosync.app.data.local.SyncTaskType
+import com.photosync.app.data.sync.SpaceTaskCompletion
 import com.photosync.app.ui.components.AppSnackbarHost
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.SectionHeader
@@ -85,12 +95,15 @@ import com.photosync.app.ui.settings.SettingsScreen
 import com.photosync.app.ui.spaces.SpaceCard
 import com.photosync.app.ui.spaces.SpaceListScreen
 import com.photosync.app.ui.spaces.SpaceListViewModel
+import com.photosync.app.ui.spaces.formatFileSize
 import com.photosync.app.ui.tasks.TaskPresentation
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
 import com.photosync.app.ui.theme.PrimaryBlue
 import com.photosync.app.ui.theme.SuccessGreen
 import com.photosync.app.ui.theme.WarningOrange
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 enum class HomeTab(
@@ -247,6 +260,25 @@ private fun HomeOverviewTab(
         it.status == MappingStatus.ERROR || it.status == MappingStatus.ACCESS_REVOKED
     }.map { it.spaceId }.toSet()
     val hasAbnormalMapping = abnormalSpaceIds.isNotEmpty()
+    val app = LocalContext.current.applicationContext as PhotoSyncApp
+    // 上传/下载/扫描都会建立会话（taskProgress 有 key），排队等待的空间在 syncingSpaceIds 中
+    val taskProgress by app.container.syncEngine.taskProgress.collectAsStateWithLifecycle()
+    val syncingSpaceIds by app.container.syncEngine.syncingSpaceIds.collectAsStateWithLifecycle()
+    val activeSpaceId = taskProgress.entries.maxByOrNull { it.value.startedAt }?.key
+        ?: syncingSpaceIds.firstOrNull()
+    val activeSpaceName = activeSpaceId?.let { id -> spaces.firstOrNull { it.id == id }?.name }
+    // 与通知栏同源：同步Worker执行中或已发布进度通知时，也算正在同步
+    val notifier = app.container.syncProgressNotifier
+    val foregroundNotification by notifier.foreground.collectAsStateWithLifecycle()
+    val workerActive by notifier.workerActive.collectAsStateWithLifecycle()
+    val isSyncing = activeSpaceId != null || foregroundNotification != null || workerActive
+    // 当前同步空间的剩余任务统计：与通知栏一致，只展示上传/下载的剩余量与大小
+    val activeStatsFlow: Flow<SyncTaskStats?> = remember(activeSpaceId) {
+        val id = activeSpaceId
+        if (id == null) flowOf(null) else app.container.syncRepository.observeStats(id)
+    }
+    val activeStats by activeStatsFlow.collectAsStateWithLifecycle(initialValue = null)
+    val activeSession = activeSpaceId?.let { taskProgress[it] }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -274,76 +306,95 @@ private fun HomeOverviewTab(
             )
         }
 
-        // 总览状态卡片（灰底 + 绿色勾选，设计图样式）
-        Column(
+        // 总览卡片：左侧整体同步状态（灰底 + 绿色勾选，设计图样式），右侧当前正在同步的空间
+        val syncRotation = if (isSyncing) {
+            val transition = rememberInfiniteTransition(label = "homeSyncRotation")
+            transition.animateFloat(
+                initialValue = 0f,
+                targetValue = 360f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 1200, easing = LinearEasing)
+                ),
+                label = "syncAngle"
+            ).value
+        } else {
+            0f
+        }
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(
-                imageVector = if (hasAbnormalMapping) Icons.Filled.SyncProblem else Icons.Filled.CheckCircle,
-                contentDescription = null,
+            OverviewCard(
+                icon = if (hasAbnormalMapping) Icons.Filled.SyncProblem else Icons.Filled.CheckCircle,
                 tint = when {
                     spaces.isEmpty() -> OnSurfaceMuted
                     hasAbnormalMapping -> WarningOrange
                     else -> SuccessGreen
                 },
-                modifier = Modifier.size(30.dp)
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = when {
+                title = when {
                     spaces.isEmpty() -> "暂无同步空间"
                     hasAbnormalMapping -> "部分目录需要处理"
                     else -> "同步正常"
                 },
-                color = when {
-                    spaces.isEmpty() -> OnSurfaceMuted
-                    hasAbnormalMapping -> WarningOrange
-                    else -> SuccessGreen
+                subtitle = when {
+                    spaces.isEmpty() -> "还没有同步空间"
+                    mappings.isEmpty() -> "未绑定本地目录"
+                    hasAbnormalMapping -> "有目录需要处理"
+                    else -> "状态正常"
                 },
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
             )
-            Spacer(Modifier.height(2.dp))
-            val summaryHint = when {
-                spaces.isEmpty() -> "创建空间并添加本地目录后，这里会显示空间与映射摘要。"
-                mappings.isEmpty() -> "本机尚未绑定本地目录"
-                hasAbnormalMapping -> "有目录授权失效或扫描异常，请进入空间详情处理"
-                else -> null
-            }
-            if (summaryHint != null) {
-                Text(
-                    text = summaryHint,
-                    color = OnSurfaceMuted,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = "待同步任务可在各空间详情页查看",
-                color = OnSurfaceMuted,
-                style = MaterialTheme.typography.bodySmall
+            OverviewCard(
+                icon = Icons.Filled.Sync,
+                tint = if (isSyncing) PrimaryBlue else OnSurfaceMuted,
+                title = when {
+                    activeSpaceId != null -> activeSpaceName ?: "同步空间"
+                    isSyncing -> "同步空间"
+                    else -> "当前无同步"
+                },
+                subtitle = if (isSyncing) {
+                    syncRemainingText(activeStats, activeSession)
+                } else {
+                    "等待同步任务"
+                },
+                iconModifier = Modifier.graphicsLayer { rotationZ = syncRotation },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
             )
         }
 
-        // 统计卡片（设计图：两列灰底小卡）
+        // 统计卡片（与上方总览卡片统一样式：左侧图标 + 右侧两行文字）
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatCard(
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OverviewCard(
                 icon = Icons.Filled.Folder,
-                value = "${spaces.size}",
-                label = "同步空间",
-                modifier = Modifier.weight(1f)
+                tint = PrimaryBlue,
+                title = "${spaces.size}",
+                subtitle = "同步空间",
+                titleColor = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
             )
-            StatCard(
+            OverviewCard(
                 icon = Icons.Filled.Sync,
-                value = "${mappings.size}",
-                label = "本机同步空间",
-                modifier = Modifier.weight(1f)
+                tint = PrimaryBlue,
+                title = "${mappings.size}",
+                subtitle = "本机同步空间",
+                titleColor = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
             )
         }
 
@@ -384,7 +435,6 @@ private fun HomeOverviewTab(
                 SpaceCard(
                     space = space,
                     hasError = space.id in abnormalSpaceIds,
-                    showParticipants = false,
                     onClick = { onOpenSpace(space.id) }
                 )
             }
@@ -403,7 +453,6 @@ private fun HomeOverviewTab(
                 modifier = Modifier.weight(1f)
             )
         }
-        val app = LocalContext.current.applicationContext as PhotoSyncApp
         val recentTasks by app.container.syncRepository.observeRecentTasks(3)
             .collectAsStateWithLifecycle(initialValue = emptyList())
         if (recentTasks.isEmpty()) {
@@ -460,38 +509,71 @@ private fun HomeOverviewTab(
     }
 }
 
+/** 右卡片副标题：与通知栏一致，只显示上传/下载的剩余任务数与剩余大小。 */
+private fun syncRemainingText(stats: SyncTaskStats?, session: SpaceTaskCompletion?): String {
+    if (stats == null || session == null) return "正在同步…"
+    val uploadRemainingBytes = (stats.pendingUploadBytes - session.activeUploadBytes).coerceAtLeast(0L)
+    val downloadRemainingBytes = (stats.pendingDownloadBytes - session.activeDownloadBytes).coerceAtLeast(0L)
+    val lines = buildList {
+        if (stats.pendingUploads > 0) {
+            add("上传剩余 ${stats.pendingUploads} · ${formatFileSize(uploadRemainingBytes)}")
+        }
+        if (stats.pendingDownloads > 0) {
+            add("下载剩余 ${stats.pendingDownloads} · ${formatFileSize(downloadRemainingBytes)}")
+        }
+    }
+    return if (lines.isEmpty()) "正在同步…" else lines.joinToString("\n")
+}
+
+/** 顶部卡片统一样式：左侧图标，右侧上下两行文字（水平居中、垂直居中）。 */
 @Composable
-private fun StatCard(
+private fun OverviewCard(
     icon: ImageVector,
-    value: String,
-    label: String,
-    modifier: Modifier = Modifier
+    tint: Color,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+    iconModifier: Modifier = Modifier,
+    titleColor: Color = tint
 ) {
     Row(
         modifier = modifier
+            .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(12.dp),
+        horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = PrimaryBlue,
-            modifier = Modifier.size(22.dp)
+            tint = tint,
+            modifier = Modifier
+                .size(28.dp)
+                .then(iconModifier)
         )
         Spacer(Modifier.width(8.dp))
-        Column {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge,
+                text = title,
+                color = titleColor,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
+            Spacer(Modifier.height(2.dp))
             Text(
-                text = label,
+                text = subtitle,
+                color = OnSurfaceMuted,
                 style = MaterialTheme.typography.bodySmall,
-                color = OnSurfaceMuted
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
         }
     }

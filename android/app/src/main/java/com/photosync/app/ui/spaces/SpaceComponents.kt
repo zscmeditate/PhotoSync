@@ -149,12 +149,6 @@ fun SpaceCard(
     onClick: () -> Unit,
     hasError: Boolean = false,
     fileCount: Int? = null,
-    members: List<SpaceMemberDto> = emptyList(),
-    showParticipants: Boolean = true,
-    thisDeviceId: String? = null,
-    canManageMembers: Boolean = false,
-    onManageMembers: (() -> Unit)? = null,
-    onExitSpace: (() -> Unit)? = null,
     onChangeCover: (() -> Unit)? = null,
     onRemoveCover: (() -> Unit)? = null,
     onRename: (() -> Unit)? = null,
@@ -279,33 +273,20 @@ fun SpaceCard(
                     }
                 }
             }
-            if (showParticipants) {
-                ParticipantSubCard(
-                    members = members,
-                    memberCount = space.memberCount,
-                    thisDeviceId = thisDeviceId,
-                    canManageMembers = canManageMembers,
-                    onManageMembers = onManageMembers,
-                    onExitSpace = onExitSpace
-                )
-            }
         }
     }
 }
 
-/** 空间卡片内的子卡片：本空间的参与设备列表；管理/退出入口按角色显示。 */
+/** 空间详情的参与设备 Tab：设备列表与管理/退出入口按角色显示。 */
 @Composable
-private fun ParticipantSubCard(
+fun ParticipantDevicesCard(
     members: List<SpaceMemberDto>,
-    memberCount: Int,
     thisDeviceId: String?,
     canManageMembers: Boolean,
     onManageMembers: (() -> Unit)?,
     onExitSpace: (() -> Unit)?
 ) {
     val thisDeviceIsMember = members.any { it.deviceId == thisDeviceId }
-    // 成员明细尚未加载时先用空间自带的设备数，避免显示为 0
-    val shownCount = if (members.isEmpty()) memberCount else members.size
     val actionText = when {
         canManageMembers && onManageMembers != null -> "管理"
         thisDeviceIsMember && onExitSpace != null -> "退出空间"
@@ -317,24 +298,19 @@ private fun ParticipantSubCard(
         else -> null
     }
     Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surface,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 10.dp)
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "参与设备 $shownCount",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = OnSurfaceMuted,
-                    modifier = Modifier.weight(1f)
-                )
-                if (action != null && actionText != null) {
+        Column(modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 8.dp)) {
+            if (action != null && actionText != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
                     TextButton(
                         onClick = action,
-                        modifier = Modifier.height(28.dp),
+                        modifier = Modifier.height(32.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                     ) {
                         Text(actionText, style = MaterialTheme.typography.labelMedium, color = PrimaryBlue)
@@ -346,7 +322,7 @@ private fun ParticipantSubCard(
                     text = "暂无成员信息",
                     style = MaterialTheme.typography.bodySmall,
                     color = OnSurfaceMuted,
-                    modifier = Modifier.padding(bottom = 4.dp)
+                    modifier = Modifier.padding(vertical = 12.dp)
                 )
             } else {
                 members.forEach { member ->

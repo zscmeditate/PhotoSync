@@ -75,6 +75,9 @@ class SyncRepository(
 
     suspend fun spaceIds(): List<String> = spaceDao.getAll().map { it.id }
 
+    /** 空间名称：通知栏进度展示用。 */
+    suspend fun spaceName(spaceId: String): String? = spaceDao.getById(spaceId)?.name
+
     /**
      * 参与同步的映射。ERROR 也参与：每次同步重试扫描（成功即自动恢复 ACTIVE），
      * 否则一次扫描异常会让目录永久退出同步，队列中的下载任务永远不被执行。
@@ -132,6 +135,10 @@ class SyncRepository(
 
     suspend fun recoverRunning(spaceId: String) =
         taskDao.recoverRunning(spaceId, System.currentTimeMillis())
+
+    /** 应用进程启动时调用：上次进程被杀时残留的 RUNNING 任务实际已中断，退回队列等待重新执行。 */
+    suspend fun recoverStaleRunning(processStartAt: Long) =
+        taskDao.recoverStaleRunning(processStartAt, System.currentTimeMillis())
 
     /** 恢复上次同步被中断后停留在“扫描中”的映射，否则它会被 syncMappings 过滤而永不参与同步。 */
     suspend fun recoverScanning(spaceId: String) = mappingDao.recoverScanning(spaceId)

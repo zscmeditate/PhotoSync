@@ -50,8 +50,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -84,6 +86,7 @@ import com.photosync.app.data.remote.JoinRequestDto
 import com.photosync.app.data.sync.SyncScheduler
 import com.photosync.app.ui.components.AppSnackbarHost
 import com.photosync.app.ui.components.EmptyStateView
+import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SectionHeader
 import com.photosync.app.ui.tasks.TaskPresentation
@@ -132,11 +135,17 @@ fun SpaceDetailScreen(
     val resolvingAllDuplicateNames by viewModel.resolvingAllDuplicateNames.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
+    val members by viewModel.members.collectAsStateWithLifecycle()
+    val devices by viewModel.devices.collectAsStateWithLifecycle()
+    val membershipChanging by viewModel.membershipChanging.collectAsStateWithLifecycle()
     val pendingDeletionCount by viewModel.pendingDeletionCount.collectAsStateWithLifecycle()
     val resolvingBulkDelete by viewModel.resolvingBulkDelete.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var changeTarget by remember { mutableStateOf<LocalFolderMapping?>(null) }
     var showStorage by rememberSaveable { mutableStateOf(false) }
+    var contentTab by rememberSaveable { mutableStateOf(SpaceContentTab.LOCAL_DIRECTORY) }
+    var showMemberManage by rememberSaveable { mutableStateOf(false) }
+    var showExitConfirm by rememberSaveable { mutableStateOf(false) }
     // 任务筛选：null = 全部；再点一次已选中的筛选可取消
     var taskFilter by rememberSaveable { mutableStateOf<TaskFilter?>(null) }
     var showClearConfirm by rememberSaveable { mutableStateOf(false) }
@@ -236,9 +245,10 @@ fun SpaceDetailScreen(
                 }
             } else {
                 val latestScan = mappings.mapNotNull { it.lastScannedAt }.maxOrNull()
-                // 「同步任务」标题在列表中的位置：加入申请区块 + 同步按钮 + 快捷入口 + 本地目录标题 + 目录项
+                // 「同步任务」标题位置：加入申请 + 同步按钮 + 快捷入口 + 内容 Tab + 当前 Tab 内容
                 val joinSectionSize = if (canManageMembers && joinRequests.isNotEmpty()) 1 + joinRequests.size else 0
-                val taskHeaderIndex = joinSectionSize + 3 + (if (mappings.isEmpty()) 1 else mappings.size)
+                val contentItemCount = if (contentTab == SpaceContentTab.PARTICIPATING_DEVICES || mappings.isEmpty()) 1 else mappings.size
+                val taskHeaderIndex = joinSectionSize + 3 + contentItemCount
                 BoxWithConstraints(modifier = Modifier.weight(1f)) {
                     // 任务区至少一屏高：筛选后内容很少时「同步任务」标题仍能滚到最顶部，不会被拉回
                     val taskSectionMinHeight = maxHeight
@@ -347,37 +357,75 @@ fun SpaceDetailScreen(
                         }
                     }
                     item {
-                        Text(
-                            text = "本地目录",
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        // 成员明细尚未加载时先用空间自带的设备数，避免显示为 0
+                        val shownMemberCount = if (members.isEmpty()) space?.memberCount ?: 0 else members.size
+                        ScrollableTabRow(
+                            selectedTabIndex = contentTab.ordinal,
+                            modifier = Modifier.fillMaxWidth(),
+                            edgePadding = 0.dp,
+                            containerColor = Color.Transparent,
+                            contentColor = PrimaryBlue,
+                            divider = {}
+                        ) {
+                            SpaceContentTab.entries.forEach { tab ->
+                                val selected = contentTab == tab
+                                Tab(
+                                    selected = selected,
+                                    onClick = { contentTab = tab },
+                                    selectedContentColor = PrimaryBlue,
+                                    unselectedContentColor = OnSurfaceMuted,
+                                    text = {
+                                        Text(
+                                            text = when (tab) {
+                                                SpaceContentTab.LOCAL_DIRECTORY -> "本地目录"
+                                                SpaceContentTab.PARTICIPATING_DEVICES -> "参与设备($shownMemberCount)"
+                                            },
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1
+                                        )
+                                    }
+                                )
+                            }
+                        }
                     }
-                    if (mappings.isEmpty()) {
-                        item {
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant
-                            ) {
-                                EmptyStateView(
-                                    icon = Icons.Filled.Folder,
-                                    title = "尚未绑定本地目录",
-                                    subtitle = "点击上方「绑定本地目录」，该目录的结构会完整同步到空间"
+                    if (contentTab == SpaceContentTab.LOCAL_DIRECTORY) {
+                        if (mappings.isEmpty()) {
+                            item {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant
+                                ) {
+                                    EmptyStateView(
+                                        icon = Icons.Filled.Folder,
+                                        title = "尚未绑定本地目录",
+                                        subtitle = "点击上方「绑定本地目录」，该目录的结构会完整同步到空间"
+                                    )
+                                }
+                            }
+                        } else {
+                            items(mappings, key = { it.id }) { mapping ->
+                                val counts = fileCounts.firstOrNull { it.mappingId == mapping.id }
+                                FolderMappingCard(
+                                    mapping = mapping,
+                                    fileCount = counts?.fileCount ?: 0,
+                                    totalSize = counts?.totalSize ?: 0L,
+                                    onOpenFiles = { onOpenMapping(mapping.id) },
+                                    onChangeDirectory = {
+                                        changeTarget = mapping
+                                        directoryLauncher.launch(null)
+                                    }
                                 )
                             }
                         }
                     } else {
-                        items(mappings, key = { it.id }) { mapping ->
-                            val counts = fileCounts.firstOrNull { it.mappingId == mapping.id }
-                            FolderMappingCard(
-                                mapping = mapping,
-                                fileCount = counts?.fileCount ?: 0,
-                                totalSize = counts?.totalSize ?: 0L,
-                                onOpenFiles = { onOpenMapping(mapping.id) },
-                                onChangeDirectory = {
-                                    changeTarget = mapping
-                                    directoryLauncher.launch(null)
-                                }
+                        item {
+                            ParticipantDevicesCard(
+                                members = members,
+                                thisDeviceId = viewModel.currentDeviceId,
+                                canManageMembers = canManageMembers && space?.role != "none",
+                                onManageMembers = { showMemberManage = true },
+                                onExitSpace = { showExitConfirm = true }
                             )
                         }
                     }
@@ -553,6 +601,29 @@ fun SpaceDetailScreen(
         StorageStatsSheet(
             stats = storageStats,
             onDismiss = { showStorage = false }
+        )
+    }
+
+    if (showMemberManage) {
+        MemberManageDialog(
+            devices = devices,
+            members = members,
+            changingDeviceId = membershipChanging,
+            onCheckedChange = viewModel::setMembership,
+            onDismiss = { showMemberManage = false }
+        )
+    }
+
+    if (showExitConfirm) {
+        ConfirmBottomSheet(
+            title = "退出空间",
+            message = "确定让本机退出「${space?.name ?: "该空间"}」？本机目录绑定会被解除，云端文件不受影响。",
+            confirmText = "退出空间",
+            onConfirm = {
+                viewModel.exitSpace()
+                showExitConfirm = false
+            },
+            onDismiss = { showExitConfirm = false }
         )
     }
 
@@ -769,29 +840,47 @@ private fun SpaceTaskSummaryCard(
             modifier = Modifier.padding(vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            SummaryStatCell("上传", stats.pendingUploads, Modifier.weight(1f))
-            SummaryStatCell("下载", stats.pendingDownloads, Modifier.weight(1f))
+            SummaryStatCell("上传", stats.pendingUploads, Modifier.weight(1f), stats.pendingUploadBytes)
+            SummaryStatCell("下载", stats.pendingDownloads, Modifier.weight(1f), stats.pendingDownloadBytes)
             SummaryStatCell("删除", stats.pendingDeletes, Modifier.weight(1f))
             SummaryStatCell("重命名", stats.pendingRenames, Modifier.weight(1f))
         }
     }
 }
 
+/** 单列统计：第一行「个数 + 标签」，传入 sizeBytes 时第二行显示文件大小合计（如 45.6 MB）。 */
 @Composable
-private fun SummaryStatCell(label: String, count: Int, modifier: Modifier = Modifier) {
+private fun SummaryStatCell(
+    label: String,
+    count: Int,
+    modifier: Modifier = Modifier,
+    sizeBytes: Long? = null
+) {
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = count.toString(),
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = PrimaryBlue
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = OnSurfaceMuted,
-            modifier = Modifier.padding(top = 2.dp)
-        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = PrimaryBlue
+            )
+            Text(
+                text = " $label",
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                modifier = Modifier.padding(bottom = 3.dp)
+            )
+        }
+        if (sizeBytes != null) {
+            Text(
+                text = formatFileSize(sizeBytes),
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
     }
 }
 
@@ -976,4 +1065,6 @@ private fun SyncTaskCard(
 }
 
 /** 同步任务筛选维度；null 表示全部。 */
+private enum class SpaceContentTab { LOCAL_DIRECTORY, PARTICIPATING_DEVICES }
+
 enum class TaskFilter { RUNNING, SUCCESS, FAILED }

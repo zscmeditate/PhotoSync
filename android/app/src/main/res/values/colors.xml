@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 Compose 主题一致的品牌色：用于通知小图标与进度条的强调色 -->
+    <color name="brand_blue">#2F6BFF</color>
+</resources>

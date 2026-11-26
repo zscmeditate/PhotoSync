@@ -59,6 +59,13 @@ class SyncEngine(
     val syncingSpaceIds: StateFlow<Set<String>> = _syncingSpaceIds.asStateFlow()
 
     /**
+     * 各空间「本次同步会话」的累计传输量，供通知栏实时进度使用。
+     * key 存在即代表该空间正在同步；剩余量由任务表统计（含执行中任务）+ 这里已传字节共同换算。
+     */
+    private val _taskProgress = MutableStateFlow<Map<String, SpaceTaskCompletion>>(emptyMap())
+    val taskProgress: StateFlow<Map<String, SpaceTaskCompletion>> = _taskProgress.asStateFlow()
+
+    /**
      * 串行化同步入口：手动同步、自动同步（WorkManager）与刷新按钮可能同时触发。
      * 若两轮同步并发，扫描写的索引会覆盖另一轮已应用的改名结果，
      * 从而产生「重复下载新文件名」「把旧文件名当新文件上传」等幻影任务。
@@ -67,6 +74,82 @@ class SyncEngine(
 
     private fun setPhase(text: String) {
         _phase.value = text
+    }
+
+    /** 开始一个空间的同步会话：通知栏据此知道该空间进入同步状态。 */
+    private fun beginSession(spaceId: String) {
+        _taskProgress.update { it + (spaceId to SpaceTaskCompletion()) }
+    }
+
+    /** 结束会话：移除后通知栏会撤销该空间的通知。 */
+    private fun endSession(spaceId: String) {
+        _taskProgress.update { it - spaceId }
+    }
+
+    private fun updateSession(spaceId: String, block: (SpaceTaskCompletion) -> SpaceTaskCompletion) {
+        _taskProgress.update { map ->
+            val current = map[spaceId] ?: return@update map
+            map + (spaceId to block(current))
+        }
+    }
+
+    /**
+     * 正在传输的文件的实时字节数：剩余大小 = 任务表统计（含执行中任务的全量大小）- 已传字节，
+     * 因此传输过程中剩余大小会随进度减少，而不是等任务结束才跳变。
+     */
+    private fun reportTransferBytes(spaceId: String, upload: Boolean, bytes: Long) {
+        updateSession(spaceId) { session ->
+            if (upload) {
+                session.copy(
+                    activeUploadBytes = bytes,
+                    activeDownloadBytes = 0,
+                    activeType = SyncTaskType.UPLOAD
+                )
+            } else {
+                session.copy(
+                    activeDownloadBytes = bytes,
+                    activeUploadBytes = 0,
+                    activeType = SyncTaskType.DOWNLOAD
+                )
+            }
+        }
+    }
+
+    /**
+     * 任务结束后计入会话完成量。取消/退回队列的任务行仍是 PENDING，不能算完成，
+     * 否则总数会被重复累加，所以以落库后的真实状态为准；
+     * 同时要求完成时间不早于会话开始，避免重复处理已完成事件时重复计数。
+     */
+    private suspend fun finishSessionTask(task: LocalSyncTask) {
+        if (task.type != SyncTaskType.UPLOAD && task.type != SyncTaskType.DOWNLOAD) return
+        val session = _taskProgress.value[task.spaceId] ?: return
+        val row = repository.getTask(task.id)
+        val finished = row != null &&
+            (row.state == SyncTaskState.COMPLETED || row.state == SyncTaskState.FAILED) &&
+            row.updatedAt >= session.startedAt
+        updateSession(task.spaceId) {
+            val upload = task.type == SyncTaskType.UPLOAD
+            val cleared = if (upload) {
+                it.copy(activeUploadBytes = 0)
+            } else {
+                it.copy(activeDownloadBytes = 0)
+            }
+            // 该方向没有在传的任务了，回到空闲态（界面据此决定显示上传还是下载）
+            val idle = if (cleared.activeType == task.type) cleared.copy(activeType = null) else cleared
+            if (!finished) {
+                idle
+            } else if (upload) {
+                idle.copy(
+                    uploadTasks = idle.uploadTasks + 1,
+                    uploadBytes = idle.uploadBytes + task.size
+                )
+            } else {
+                idle.copy(
+                    downloadTasks = idle.downloadTasks + 1,
+                    downloadBytes = idle.downloadBytes + task.size
+                )
+            }
+        }
     }
 
     /**
@@ -105,36 +188,41 @@ class SyncEngine(
         try {
             var result = SyncRunResult.SUCCESS
             for (spaceId in repository.spaceIds()) {
-                repository.recoverRunning(spaceId)
-                var taskFailed = false
-                while (true) {
-                    val task = repository.nextQueuedDownload(spaceId) ?: break
-                    setPhase("正在下载：${task.remoteRelativePath.substringAfterLast('/')}")
-                    when (downloadStandaloneTask(spaceId, deviceId, task)) {
-                        SyncRunResult.SUCCESS -> Unit
-                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                        SyncRunResult.FAILURE -> taskFailed = true
+                beginSession(spaceId)
+                try {
+                    repository.recoverRunning(spaceId)
+                    var taskFailed = false
+                    while (true) {
+                        val task = repository.nextQueuedDownload(spaceId) ?: break
+                        setPhase("正在下载：${task.remoteRelativePath.substringAfterLast('/')}")
+                        when (downloadStandaloneTask(spaceId, deviceId, task)) {
+                            SyncRunResult.SUCCESS -> Unit
+                            SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                            SyncRunResult.FAILURE -> taskFailed = true
+                        }
                     }
-                }
-                while (true) {
-                    val task = repository.nextPendingUpload(spaceId) ?: break
-                    setPhase("正在上传：${task.remoteRelativePath.substringAfterLast('/')}")
-                    when (upload(task)) {
-                        SyncRunResult.SUCCESS -> Unit
-                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                        SyncRunResult.FAILURE -> taskFailed = true
+                    while (true) {
+                        val task = repository.nextPendingUpload(spaceId) ?: break
+                        setPhase("正在上传：${task.remoteRelativePath.substringAfterLast('/')}")
+                        when (upload(task)) {
+                            SyncRunResult.SUCCESS -> Unit
+                            SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                            SyncRunResult.FAILURE -> taskFailed = true
+                        }
                     }
-                }
-                while (true) {
-                    val task = repository.nextPendingMutation(spaceId) ?: break
-                    setPhase("正在提交变更：${task.remoteRelativePath.substringAfterLast('/')}")
-                    when (commitMutation(task)) {
-                        SyncRunResult.SUCCESS -> Unit
-                        SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                        SyncRunResult.FAILURE -> taskFailed = true
+                    while (true) {
+                        val task = repository.nextPendingMutation(spaceId) ?: break
+                        setPhase("正在提交变更：${task.remoteRelativePath.substringAfterLast('/')}")
+                        when (commitMutation(task)) {
+                            SyncRunResult.SUCCESS -> Unit
+                            SyncRunResult.RETRY -> return SyncRunResult.RETRY
+                            SyncRunResult.FAILURE -> taskFailed = true
+                        }
                     }
+                    if (taskFailed && result == SyncRunResult.SUCCESS) result = SyncRunResult.FAILURE
+                } finally {
+                    endSession(spaceId)
                 }
-                if (taskFailed && result == SyncRunResult.SUCCESS) result = SyncRunResult.FAILURE
             }
             return result
         } finally {
@@ -150,7 +238,15 @@ class SyncEngine(
     suspend fun syncSpace(spaceId: String, skipLocalScan: Boolean = false): SyncRunResult {
         _syncingSpaceIds.update { it + spaceId }
         try {
-            return syncMutex.withLock { syncSpaceLocked(spaceId, skipLocalScan) }
+            return syncMutex.withLock {
+                // 会话在拿到同步锁之后才开始：排队等待的空间不会提前弹出进度通知。
+                beginSession(spaceId)
+                try {
+                    syncSpaceLocked(spaceId, skipLocalScan)
+                } finally {
+                    endSession(spaceId)
+                }
+            }
         } finally {
             _syncingSpaceIds.update { it - spaceId }
         }
@@ -375,6 +471,12 @@ class SyncEngine(
     }
 
     private suspend fun upload(task: LocalSyncTask): SyncRunResult {
+        val result = performUpload(task)
+        finishSessionTask(task)
+        return result
+    }
+
+    private suspend fun performUpload(task: LocalSyncTask): SyncRunResult {
         var current = repository.markTaskRunning(task)
         try {
             val mapping = repository.mapping(task.mappingId)
@@ -506,6 +608,7 @@ class SyncEngine(
                     current.bytesTransferred,
                     current.nextPartNumber
                 )
+                reportTransferBytes(current.spaceId, upload = true, bytes = current.bytesTransferred)
             }
 
             val completed = when (
@@ -921,6 +1024,18 @@ class SyncEngine(
         mappings: List<SyncMappingRule>,
         event: SyncEventDto
     ): SyncRunResult {
+        val result = performEvent(spaceId, deviceId, mappings, event)
+        // 事件下载在 applyObjectEvent 内部执行，按事件版本取回落库后的任务行计进度
+        repository.taskForEvent(spaceId, event.revision)?.let { finishSessionTask(it) }
+        return result
+    }
+
+    private suspend fun performEvent(
+        spaceId: String,
+        deviceId: String,
+        mappings: List<SyncMappingRule>,
+        event: SyncEventDto
+    ): SyncRunResult {
         val payload = event.payload ?: return SyncRunResult.FAILURE
         // 本机尚未绑定任何目录时不确认事件：否则远端已有文件会被当作基线吞掉，
         // 绑定目录后也无法补下载（例如从设备加入已有空间后尚未选择本地目录）。
@@ -1088,6 +1203,7 @@ class SyncEngine(
                         // 任务被取消或被移到队列末尾：中断当前下载
                         ensureTaskRunning(task.id)
                         repository.updateDownloadProgress(task.id, transferred)
+                        reportTransferBytes(spaceId, upload = false, bytes = transferred)
                     }
                 )
                 repository.markSynced(
@@ -1134,6 +1250,16 @@ class SyncEngine(
      * 目标已存在且内容一致时只补索引；内容不一致时标记冲突，交给用户处理。
      */
     private suspend fun downloadStandaloneTask(
+        spaceId: String,
+        deviceId: String,
+        task: LocalSyncTask
+    ): SyncRunResult {
+        val result = performDownloadTask(spaceId, deviceId, task)
+        finishSessionTask(task)
+        return result
+    }
+
+    private suspend fun performDownloadTask(
         spaceId: String,
         deviceId: String,
         task: LocalSyncTask
@@ -1208,6 +1334,7 @@ class SyncEngine(
                     // 任务被取消或被移到队列末尾：中断当前下载
                     ensureTaskRunning(current.id)
                     repository.updateDownloadProgress(current.id, transferred)
+                    reportTransferBytes(current.spaceId, upload = false, bytes = transferred)
                 }
             )
             repository.markSynced(
@@ -2351,6 +2478,20 @@ data class FileFailureInfo(
     val cloudError: String?,
     val localSize: Long?,
     val localModifiedAt: Long?
+)
+
+/** 某空间本次同步会话已处理的任务量与大小，以及正在传输文件已传的字节数。 */
+data class SpaceTaskCompletion(
+    val uploadTasks: Int = 0,
+    val uploadBytes: Long = 0,
+    val downloadTasks: Int = 0,
+    val downloadBytes: Long = 0,
+    val activeUploadBytes: Long = 0,
+    val activeDownloadBytes: Long = 0,
+    /** 当前正在传输的方向（SyncTaskType 常量）；null 表示此刻没有任务在传（规划中或切换间隙）。 */
+    val activeType: String? = null,
+    /** 会话开始时间：只有此时间之后落库完成的任务才计入本会话。 */
+    val startedAt: Long = System.currentTimeMillis()
 )
 
 /** 当前任务被用户取消/移到队列末尾，只中断该任务，不影响整轮同步。 */
