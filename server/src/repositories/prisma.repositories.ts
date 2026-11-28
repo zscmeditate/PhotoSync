@@ -368,6 +368,20 @@ export class PrismaSpaceRepository implements SpaceRepository {
     await this.prisma.syncSpace.delete({ where: { id: spaceId } });
   }
 
+  async listObjectIds(spaceId: string): Promise<string[]> {
+    const [versions, uploads] = await Promise.all([
+      this.prisma.fileVersion.findMany({
+        where: { file: { spaceId } },
+        select: { objectId: true },
+      }),
+      this.prisma.uploadSession.findMany({
+        where: { spaceId },
+        select: { objectId: true },
+      }),
+    ]);
+    return [...new Set([...versions, ...uploads].map((row) => row.objectId))];
+  }
+
   async listMembershipsForDevices(
     spaceId: string,
     deviceIds: string[],
@@ -450,6 +464,18 @@ export class PrismaSpaceRepository implements SpaceRepository {
   ): Promise<SpaceJoinRequestWithDeviceRecord | null> {
     const row = await this.prisma.spaceJoinRequest.findFirst({
       where: { spaceId, deviceId, status: 'pending' },
+      orderBy: { createdAt: 'desc' },
+      include: { device: true },
+    });
+    return row ? this.toJoinRequest(row) : null;
+  }
+
+  async findLatestJoinRequest(
+    spaceId: string,
+    deviceId: string,
+  ): Promise<SpaceJoinRequestWithDeviceRecord | null> {
+    const row = await this.prisma.spaceJoinRequest.findFirst({
+      where: { spaceId, deviceId },
       orderBy: { createdAt: 'desc' },
       include: { device: true },
     });

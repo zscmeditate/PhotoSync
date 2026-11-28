@@ -127,6 +127,13 @@ export const spaceSchema = {
       enum: ['owner', 'admin', 'member', 'viewer', 'none'],
       description: 'none 表示该设备尚未加入该空间',
     },
+    joinRequestStatus: {
+      anyOf: [
+        { type: 'string', enum: ['pending', 'approved', 'rejected'] },
+        { type: 'null' },
+      ],
+      description: '当前设备最近一次加入申请的状态',
+    },
     memberCount: { type: 'integer' },
     mappingCount: { type: 'integer' },
     createdAt: { type: 'string', description: 'ISO8601' },

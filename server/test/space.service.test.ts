@@ -6,7 +6,7 @@ import {
   normalizeRemotePath,
   SpaceService,
 } from '../src/services/space.service';
-import { FakeDeviceRepository, FakeSpaceRepository } from './fakes';
+import { FakeDeviceRepository, FakeObjectStore, FakeSpaceRepository } from './fakes';
 
 const NOW = new Date('2026-01-02T03:04:05.000Z');
 const HASH_A = 'a'.repeat(64);
@@ -15,8 +15,9 @@ const HASH_B = 'b'.repeat(64);
 function makeService() {
   const devices = new FakeDeviceRepository();
   const spaces = new FakeSpaceRepository(devices);
-  const service = new SpaceService({ devices, spaces, now: () => NOW });
-  return { service, devices, spaces };
+  const objectStore = new FakeObjectStore();
+  const service = new SpaceService({ devices, spaces, objectStore, now: () => NOW });
+  return { service, devices, spaces, objectStore };
 }
 
 async function addDevice(
@@ -57,14 +58,15 @@ function seedFile(
   relativePath: string,
   sha256: string,
   isDeleted = false,
-): void {
+): string {
   const id = randomUUID();
+  const objectId = randomUUID();
   spaces.files.set(id, {
     id,
     spaceId,
     relativePath,
     fileName: relativePath.split('/').at(-1)!,
-    objectId: randomUUID(),
+    objectId,
     size: 123n,
     sha256,
     version: 2,
@@ -73,6 +75,7 @@ function seedFile(
     updatedAt: NOW,
     lastModifiedByDeviceId: randomUUID(),
   });
+  return objectId;
 }
 
 async function expectAppError(fn: () => Promise<unknown>, statusCode: number, code: string) {
@@ -236,6 +239,17 @@ describe('SpaceService 空间修改与删除权限', () => {
     expect(spaces.spaces.has(space.id)).toBe(false);
   });
 
+  it('删除空间时清理对象存储，避免历史文件长期占用磁盘', async () => {
+    const { service, spaces, objectStore, device, space, userId } = await setupSpace();
+    const objectId = seedFile(spaces, space.id, 'photos/a.jpg', HASH_A);
+    objectStore.objects.set(objectId, Buffer.from('content'));
+
+    await service.deleteSpace(userId, device.id, space.id);
+
+    expect(spaces.spaces.has(space.id)).toBe(false);
+    expect(objectStore.objects.has(objectId)).toBe(false);
+  });
+
   it('从设备（非管理员角色）不能改名也不能删除空间', async () => {
     const { service, devices, spaces, device, space, userId } = await setupSpace();
     const secondary = await addDevice(devices, userId);
@@ -376,6 +390,26 @@ describe('SpaceService 加入空间申请', () => {
     expect(rejected.status).toBe('rejected');
     const members = await spaces.listMembers(space.id);
     expect(members.map((member) => member.deviceId)).not.toContain(secondary.id);
+  });
+
+  it('空间列表返回本机最新申请状态，拒绝后可重新申请', async () => {
+    const { service, device, secondary, space, userId } = await setupWithSecondary();
+
+    const initial = await service.listSpaces(userId, secondary.id);
+    expect(initial.find((item) => item.id === space.id)?.joinRequestStatus).toBeNull();
+
+    const applied = await service.requestToJoinSpace(userId, space.id, secondary.id);
+    const pending = await service.listSpaces(userId, secondary.id);
+    expect(pending.find((item) => item.id === space.id)?.joinRequestStatus).toBe('pending');
+
+    await service.resolveJoinRequest(userId, applied.request.id, device.id, false);
+    const rejected = await service.listSpaces(userId, secondary.id);
+    expect(rejected.find((item) => item.id === space.id)?.joinRequestStatus).toBe('rejected');
+
+    const reapplied = await service.requestToJoinSpace(userId, space.id, secondary.id);
+    expect(reapplied.request.id).not.toBe(applied.request.id);
+    const pendingAgain = await service.listSpaces(userId, secondary.id);
+    expect(pendingAgain.find((item) => item.id === space.id)?.joinRequestStatus).toBe('pending');
   });
 
   it('主设备自己申请时直接成为成员，已是成员再申请返回 409', async () => {

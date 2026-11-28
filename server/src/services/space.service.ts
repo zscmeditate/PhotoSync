@@ -25,6 +25,7 @@ import type {
   SpaceWithCountsRecord,
   SyncSpaceRecord,
 } from '../repositories/ports';
+import type { ObjectStore } from '../lib/object-store';
 
 const MAX_REMOTE_FILES = 10000;
 const ONLINE_WINDOW_MS = 5 * 60 * 1000;
@@ -45,6 +46,8 @@ export interface SpaceDto {
   revision: string;
   /** none 表示该设备尚未加入该空间（与 spaceDtoSchema 的枚举一致） */
   role: MemberRoleValue | 'none';
+  /** 当前设备最近一次加入申请的状态；从未申请为 null */
+  joinRequestStatus: JoinRequestStatusValue | null;
   memberCount: number;
   mappingCount: number;
   createdAt: string;
@@ -146,6 +149,7 @@ export interface ScanManifestResult {
 export interface SpaceServiceDeps {
   spaces: SpaceRepository;
   devices: DeviceRepository;
+  objectStore: ObjectStore;
   now?: () => Date;
 }
 
@@ -261,8 +265,11 @@ export class SpaceService {
       }
       seen.add(space.id);
       const role = await this.roleFor(space, userId, deviceIds, deviceId);
+      const joinRequestStatus = deviceId && deviceIds.includes(deviceId)
+        ? (await this.deps.spaces.findLatestJoinRequest(space.id, deviceId))?.status ?? null
+        : null;
       // 未加入该空间的设备仍应看到空间（用于「加入空间」列表），标记为 none
-      result.push(this.toSpaceDto(space, role ?? 'none'));
+      result.push(this.toSpaceDto(space, role ?? 'none', undefined, undefined, joinRequestStatus));
     }
     return result;
   }
@@ -365,7 +372,12 @@ export class SpaceService {
   ): Promise<void> {
     await this.requireAccess(userId, spaceId);
     await this.requirePrimaryDevice(userId, deviceId);
+    const objectIds = await this.deps.spaces.listObjectIds(spaceId);
     await this.deps.spaces.delete(spaceId);
+    // 空间删除后这些对象已无人引用，必须同步从对象存储清除，否则磁盘只增不减。
+    await Promise.allSettled(
+      objectIds.map((objectId) => this.deps.objectStore.deleteObject(objectId)),
+    );
   }
 
   async addSpaceMember(
@@ -731,6 +743,7 @@ export class SpaceService {
     role: MemberRoleValue | 'none',
     memberCount?: number,
     mappingCount?: number,
+    joinRequestStatus: JoinRequestStatusValue | null = null,
   ): SpaceDto {
     const counts = space as SpaceWithCountsRecord;
     return {
@@ -741,6 +754,7 @@ export class SpaceService {
       coverUpdatedAt: space.coverUpdatedAt?.toISOString() ?? null,
       revision: space.revision.toString(),
       role,
+      joinRequestStatus,
       memberCount: memberCount ?? counts.memberCount,
       mappingCount: mappingCount ?? counts.mappingCount,
       createdAt: space.createdAt.toISOString(),

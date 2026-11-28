@@ -5,13 +5,14 @@ import {
   notMember,
   partConflict,
   spaceNotFound,
+  storageFull,
   uploadIncomplete,
   uploadIntegrityMismatch,
   uploadNotActive,
   uploadNotFound,
   validationError,
 } from '../lib/errors';
-import type { ObjectStore } from '../lib/object-store';
+import { isStorageFullError, type ObjectStore } from '../lib/object-store';
 import type {
   DeviceRepository,
   SpaceRepository,
@@ -105,7 +106,9 @@ export class TransferService {
     }
 
     const objectId = randomUUID();
-    const providerUploadId = await this.deps.objectStore.createMultipartUpload(objectId);
+    const providerUploadId = await this.storage(
+      this.deps.objectStore.createMultipartUpload(objectId),
+    );
     const result = await this.deps.transfers.createUpload({
       deviceId: input.deviceId,
       spaceId: input.spaceId,
@@ -153,12 +156,14 @@ export class TransferService {
       throw uploadNotActive();
     }
 
-    const etag = await this.deps.objectStore.uploadPart({
-      objectId: session.objectId,
-      providerUploadId: session.providerUploadId,
-      partNumber,
-      body,
-    });
+    const etag = await this.storage(
+      this.deps.objectStore.uploadPart({
+        objectId: session.objectId,
+        providerUploadId: session.providerUploadId,
+        partNumber,
+        body,
+      }),
+    );
     const part = await this.deps.transfers.saveUploadedPart(session.id, {
       partNumber,
       etag,
@@ -196,14 +201,16 @@ export class TransferService {
         session.objectId,
         session.providerUploadId,
       );
-      await this.deps.objectStore.putEmptyObject(session.objectId);
+      await this.storage(this.deps.objectStore.putEmptyObject(session.objectId));
     } else {
       let completionError: unknown = null;
       try {
-        await this.deps.objectStore.completeMultipartUpload(
-          session.objectId,
-          session.providerUploadId,
-          session.parts.map((part) => ({ partNumber: part.partNumber, etag: part.etag })),
+        await this.storage(
+          this.deps.objectStore.completeMultipartUpload(
+            session.objectId,
+            session.providerUploadId,
+            session.parts.map((part) => ({ partNumber: part.partNumber, etag: part.etag })),
+          ),
         );
       } catch (error) {
         // 网络重试时 S3 可能已完成而 DB 尚未更新；继续读取最终对象验证。
@@ -252,6 +259,21 @@ export class TransferService {
         this.deps.transfers.markUploadStatus(session.id, 'aborted'),
       ]);
       throw uploadIntegrityMismatch();
+    }
+  }
+
+  /**
+   * 把对象存储的「磁盘写满」翻译成明确的 STORAGE_FULL，
+   * 避免客户端只看到笼统的 500 并反复重试。
+   */
+  private async storage<T>(operation: Promise<T>): Promise<T> {
+    try {
+      return await operation;
+    } catch (error) {
+      if (isStorageFullError(error)) {
+        throw storageFull();
+      }
+      throw error;
     }
   }
 

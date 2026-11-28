@@ -208,6 +208,8 @@ export interface SpaceRepository {
     spaceId: string,
   ): Promise<{ image: Buffer; contentType: string; updatedAt: Date } | null>;
   delete(spaceId: string): Promise<void>;
+  /** 空间内所有需要从对象存储清除的内容（文件各版本 + 未完成上传会话）。 */
+  listObjectIds(spaceId: string): Promise<string[]>;
 
   listMembershipsForDevices(spaceId: string, deviceIds: string[]): Promise<SpaceMemberRecord[]>;
   listMembers(spaceId: string): Promise<SpaceMemberWithDeviceRecord[]>;
@@ -220,6 +222,10 @@ export interface SpaceRepository {
 
   // ===== 加入空间申请 =====
   findPendingJoinRequest(
+    spaceId: string,
+    deviceId: string,
+  ): Promise<SpaceJoinRequestWithDeviceRecord | null>;
+  findLatestJoinRequest(
     spaceId: string,
     deviceId: string,
   ): Promise<SpaceJoinRequestWithDeviceRecord | null>;

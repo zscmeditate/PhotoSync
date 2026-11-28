@@ -392,6 +392,16 @@ export class FakeSpaceRepository implements SpaceRepository {
     }
   }
 
+  async listObjectIds(spaceId: string): Promise<string[]> {
+    return [
+      ...new Set(
+        [...this.files.values()]
+          .filter((file) => file.spaceId === spaceId)
+          .map((file) => file.objectId),
+      ),
+    ];
+  }
+
   async listMembershipsForDevices(
     spaceId: string,
     deviceIds: string[],
@@ -486,6 +496,17 @@ export class FakeSpaceRepository implements SpaceRepository {
       (item) =>
         item.spaceId === spaceId && item.deviceId === deviceId && item.status === 'pending',
     );
+    return request ? this.withJoinDevice(request) : null;
+  }
+
+  async findLatestJoinRequest(
+    spaceId: string,
+    deviceId: string,
+  ): Promise<SpaceJoinRequestWithDeviceRecord | null> {
+    const request = [...this.joinRequests.values()]
+      .filter((item) => item.spaceId === spaceId && item.deviceId === deviceId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .at(-1);
     return request ? this.withJoinDevice(request) : null;
   }
 

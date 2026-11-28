@@ -229,3 +229,12 @@ function isStorageError(error: unknown, names: string[], status?: number): boole
     (status !== undefined && candidate.$metadata?.httpStatusCode === status)
   );
 }
+
+/** MinIO/S3 磁盘写满（HTTP 507）：调用方应转成明确的 STORAGE_FULL 错误。 */
+export function isStorageFullError(error: unknown): boolean {
+  return isStorageError(
+    error,
+    ['XMinioStorageFull', 'StorageFull', 'InsufficientStorage'],
+    507,
+  );
+}

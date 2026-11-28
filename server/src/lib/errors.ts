@@ -42,6 +42,7 @@ export const ErrorCodes = {
   BULK_DELETE_CONFIRMATION_REQUIRED: 'BULK_DELETE_CONFIRMATION_REQUIRED',
   OBJECT_NOT_FOUND: 'OBJECT_NOT_FOUND',
   SYNC_CONFLICT: 'SYNC_CONFLICT',
+  STORAGE_FULL: 'STORAGE_FULL',
   NOT_FOUND: 'NOT_FOUND',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 } as const;
@@ -241,6 +242,15 @@ export function objectNotFound(): AppError {
 
 export function syncConflict(message = 'Concurrent sync transaction conflict; retry the operation'): AppError {
   return new AppError(409, ErrorCodes.SYNC_CONFLICT, message);
+}
+
+/** 对象存储磁盘写满：需要运维清理空间后重试，而不是无意义的重复上传。 */
+export function storageFull(): AppError {
+  return new AppError(
+    507,
+    ErrorCodes.STORAGE_FULL,
+    'Server storage is full; free disk space on the server and retry',
+  );
 }
 
 export function notFound(message = 'Resource not found'): AppError {

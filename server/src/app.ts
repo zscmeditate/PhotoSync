@@ -68,7 +68,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     refreshTokens: deps.refreshTokens,
     spaces: deps.spaces,
   });
-  const spaceService = new SpaceService({ spaces: deps.spaces, devices: deps.devices });
+  const spaceService = new SpaceService({
+    spaces: deps.spaces,
+    devices: deps.devices,
+    objectStore: deps.objectStore,
+  });
   const transferService = new TransferService({
     transfers: deps.transfers,
     spaces: deps.spaces,
