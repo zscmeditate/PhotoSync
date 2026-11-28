@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.photosync.app.ui.theme.AccentCyan
@@ -59,6 +60,72 @@ import com.photosync.app.ui.theme.RadiusCard
 import com.photosync.app.ui.theme.SuccessGreen
 import com.photosync.app.ui.theme.SurfaceSoft
 import com.photosync.app.ui.theme.WarningOrange
+
+/**
+ * 统计卡片：上方一行大字（可选右侧灰色小字，如文件总大小），下方一行「小图标 + 小字」。
+ */
+@Composable
+fun StatTile(
+    title: String,
+    label: String,
+    icon: ImageVector,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    trailing: String? = null,
+    titleColor: Color = tint,
+    iconModifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(RadiusCard.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = title,
+                color = titleColor,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (!trailing.isNullOrBlank()) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = trailing,
+                    color = OnSurfaceMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier
+                    .size(14.dp)
+                    .then(iconModifier)
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = label,
+                color = OnSurfaceMuted,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
 
 /** 醒目主按钮（纯蓝大按钮，设计图样式） */
 @Composable

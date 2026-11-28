@@ -89,6 +89,7 @@ import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.ConfirmBottomSheet
 import com.photosync.app.ui.components.PrimaryButton
 import com.photosync.app.ui.components.SectionHeader
+import com.photosync.app.ui.components.StatTile
 import com.photosync.app.ui.tasks.TaskPresentation
 import com.photosync.app.ui.theme.ErrorRed
 import com.photosync.app.ui.theme.OnSurfaceMuted
@@ -115,7 +116,8 @@ fun SpaceDetailScreen(
             syncEngine = app.container.syncEngine,
             apiClient = app.container.apiClient,
             scheduleSync = { SyncScheduler.enqueue(app, force = true, spaceId = spaceId) },
-            spaceId = spaceId
+            spaceId = spaceId,
+            appScope = app.appScope
         )
     }
     val space by viewModel.space.collectAsStateWithLifecycle()
@@ -134,6 +136,7 @@ fun SpaceDetailScreen(
     val backgroundSyncing by viewModel.backgroundSyncing.collectAsStateWithLifecycle()
     val resolvingAllDuplicateNames by viewModel.resolvingAllDuplicateNames.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
+    val logCount by viewModel.logCount.collectAsStateWithLifecycle()
     val canManageMembers by viewModel.canManageMembers.collectAsStateWithLifecycle()
     val members by viewModel.members.collectAsStateWithLifecycle()
     val devices by viewModel.devices.collectAsStateWithLifecycle()
@@ -152,6 +155,9 @@ fun SpaceDetailScreen(
     var showResolveMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+
+    // 进入页面即拉取云端存储统计，供「回收站 / 云端目录」卡片展示数量与大小
+    LaunchedEffect(spaceId) { viewModel.loadStorageStats() }
 
     val filteredTasks = remember(tasks, taskFilter) {
         tasks
@@ -340,20 +346,41 @@ fun SpaceDetailScreen(
                         }
                     }
                     item {
+                        // 上方大字为数量（回收站/云端目录右侧灰色小字为总大小），下方为「小图标 + 名称」
+                        val stats = storageStats?.takeIf { !it.loading }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            SpaceQuickButton("回收站", Icons.Filled.Delete, Modifier.weight(1f)) {
-                                onOpenTrash(spaceId)
-                            }
-                            SpaceQuickButton("云端目录", Icons.Filled.Cloud, Modifier.weight(1f)) {
-                                showStorage = true
-                                viewModel.loadStorageStats()
-                            }
-                            SpaceQuickButton("同步日志", Icons.Filled.History, Modifier.weight(1f)) {
-                                onOpenActivityLog(spaceId)
-                            }
+                            StatTile(
+                                title = stats?.let { "${it.trashCount}" } ?: "—",
+                                trailing = stats?.let { formatFileSize(it.trashSize) },
+                                label = "回收站",
+                                icon = Icons.Filled.Delete,
+                                tint = PrimaryBlue,
+                                modifier = Modifier.weight(1f),
+                                onClick = { onOpenTrash(spaceId) }
+                            )
+                            StatTile(
+                                title = stats?.let { "${it.activeFileCount}" } ?: "—",
+                                trailing = stats?.let { formatFileSize(it.activeSize) },
+                                label = "云端目录",
+                                icon = Icons.Filled.Cloud,
+                                tint = PrimaryBlue,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    showStorage = true
+                                    viewModel.loadStorageStats()
+                                }
+                            )
+                            StatTile(
+                                title = "$logCount",
+                                label = "同步日志",
+                                icon = Icons.Filled.History,
+                                tint = PrimaryBlue,
+                                modifier = Modifier.weight(1f),
+                                onClick = { onOpenActivityLog(spaceId) }
+                            )
                         }
                     }
                     item {
@@ -884,34 +911,6 @@ private fun SummaryStatCell(
     }
 }
 
-/** 本地目录上方的快捷入口按钮：图标 + 文字。 */
-@Composable
-private fun SpaceQuickButton(
-    label: String,
-    icon: ImageVector,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = modifier.height(40.dp),
-        shape = RoundedCornerShape(10.dp),
-        contentPadding = PaddingValues(horizontal = 4.dp)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp)
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1
-        )
-    }
-}
-
 /** 单个同步任务卡片：状态、进度、错误；进行中任务提供「取消」，其余任务操作收纳到「处理」入口。 */
 @Composable
 private fun SyncTaskCard(
@@ -1004,7 +1003,8 @@ private fun SyncTaskCard(
                 ) {
                     LinearProgressIndicator(
                         progress = { (task.bytesTransferred.toFloat() / task.size.toFloat()).coerceIn(0f, 1f) },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        drawStopIndicator = {}
                     )
                     TextButton(
                         onClick = onCancel,

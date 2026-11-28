@@ -45,6 +45,7 @@ object ErrorMessages {
             "BULK_DELETE_CONFIRMATION_REQUIRED" -> "检测到大量删除，需确认后才能继续"
             "OBJECT_NOT_FOUND" -> "远端文件内容已丢失，无法下载"
             "SYNC_CONFLICT" -> "同步状态冲突，请刷新后重试"
+            "STORAGE_FULL" -> "服务器存储空间不足，请清理服务器磁盘后重试"
             "INTERNAL_ERROR" -> "服务器内部错误，请稍后重试"
             "ACCESS_REVOKED" -> "本地目录授权已失效，请重新授权"
             "LOCAL_FILE_MISSING" -> "本地文件已不存在"

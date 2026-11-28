@@ -11,8 +11,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.photosync.app.ui.navigation.AppRoot
 import com.photosync.app.ui.theme.PhotoSyncTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -29,6 +32,15 @@ class MainActivity : ComponentActivity() {
                     AppRoot()
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 导入/切换应用回来后，清理被取消的同步残留在「进行中」的任务（引擎空闲时才会生效）
+        val container = (application as PhotoSyncApp).container
+        lifecycleScope.launch(Dispatchers.IO) {
+            container.syncEngine.recoverAbortedTasksIfIdle()
         }
     }
 

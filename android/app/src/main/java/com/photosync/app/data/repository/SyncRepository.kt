@@ -136,9 +136,9 @@ class SyncRepository(
     suspend fun recoverRunning(spaceId: String) =
         taskDao.recoverRunning(spaceId, System.currentTimeMillis())
 
-    /** 应用进程启动时调用：上次进程被杀时残留的 RUNNING 任务实际已中断，退回队列等待重新执行。 */
-    suspend fun recoverStaleRunning(processStartAt: Long) =
-        taskDao.recoverStaleRunning(processStartAt, System.currentTimeMillis())
+    /** 引擎空闲时调用：上次被取消/进程被杀残留的 RUNNING 任务实际已中断，退回队列等待重新执行。 */
+    suspend fun recoverAllRunning() =
+        taskDao.recoverAllRunning(System.currentTimeMillis())
 
     /** 恢复上次同步被中断后停留在“扫描中”的映射，否则它会被 syncMappings 过滤而永不参与同步。 */
     suspend fun recoverScanning(spaceId: String) = mappingDao.recoverScanning(spaceId)

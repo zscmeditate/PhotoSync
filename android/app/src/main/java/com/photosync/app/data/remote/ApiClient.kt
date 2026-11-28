@@ -53,12 +53,26 @@ class ApiClient(
 
     private val authApi: ApiService by lazy { buildApi(plainClient) }
 
+    /** 诊断：记录非 2xx 响应，便于定位服务端内部错误的具体接口。 */
+    private val errorLoggingInterceptor = okhttp3.Interceptor { chain ->
+        val response = chain.proceed(chain.request())
+        if (!response.isSuccessful) {
+            android.util.Log.w(
+                "PhotoSyncHttp",
+                "${response.request.method} ${response.request.url.encodedPath} -> ${response.code} " +
+                    response.peekBody(2048).string()
+            )
+        }
+        response
+    }
+
     /** 鉴权客户端：自动 Bearer + 401 刷新重放 */
     private val authedClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .addInterceptor(baseUrlInterceptor)
         .addInterceptor(AuthInterceptor(tokenStore, authApi, json))
+        .addInterceptor(errorLoggingInterceptor)
         .build()
 
     val api: ApiService by lazy { buildApi(authedClient) }

@@ -83,7 +83,7 @@ fun JoinSpaceScreen(
                     EmptyStateView(
                         icon = Icons.Filled.Folder,
                         title = "暂无可加入的空间",
-                        subtitle = "同一账号下其他设备创建的空间会显示在这里；已在本机绑定目录的空间不会重复出现"
+                        subtitle = "同一账号下其他设备创建的空间会显示在这里；已绑定目录或正在等待审批的空间不会重复出现"
                     )
                 }
             }

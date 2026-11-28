@@ -213,13 +213,14 @@ class SpaceRepository(
                 database.withTransaction {
                     val remoteIds = remoteSpaces.map { it.id }.toSet()
                     spaceDao.getAll().filter { it.id !in remoteIds }.forEach { stale ->
-                        mappingDao.getBySpace(stale.id).forEach { fileDao.clearByMapping(it.id) }
-                        syncTaskDao.deleteBySpace(stale.id)
-                        syncCursorDao.deleteBySpace(stale.id)
-                        mappingDao.deleteBySpaceId(stale.id)
-                        spaceDao.deleteById(stale.id)
+                        deleteLocalSpaceData(stale.id)
                     }
                     spaceDao.upsertAll(remoteSpaces.map { it.toLocal(spaceDao.getById(it.id)) })
+                    // 防御：空间被其他设备删除后，本机可能只剩映射行（空间行已不在），
+                    // 统一清掉，避免它继续占用本地目录导致无法再绑定。
+                    mappingDao.getWithoutSpace().map { it.spaceId }.distinct().forEach { orphanSpaceId ->
+                        deleteLocalSpaceData(orphanSpaceId)
+                    }
                 }
                 // 空间列表更新后尝试恢复本机在服务端记录的目录绑定（重装/重新登录场景）
                 restoreDeviceMappings()
@@ -270,13 +271,7 @@ class SpaceRepository(
             ?: return ApiResult.Failure("INVALID_DEVICE", "本机设备尚未注册，请先在设备管理页注册")
         return when (val result = apiCall { apiClient.api.deleteSpace(spaceId, deviceId) }) {
             is ApiResult.Success -> {
-                database.withTransaction {
-                    mappingDao.getBySpace(spaceId).forEach { fileDao.clearByMapping(it.id) }
-                    syncTaskDao.deleteBySpace(spaceId)
-                    syncCursorDao.deleteBySpace(spaceId)
-                    mappingDao.deleteBySpaceId(spaceId)
-                    spaceDao.deleteById(spaceId)
-                }
+                database.withTransaction { deleteLocalSpaceData(spaceId) }
                 spaceCoverStore.delete(spaceId)
                 ApiResult.Success(Unit)
             }
@@ -376,7 +371,10 @@ class SpaceRepository(
                 apiClient.api.requestJoinSpace(spaceId, MemberAddRequest(deviceId))
             }
         ) {
-            is ApiResult.Success -> ApiResult.Success(result.data)
+            is ApiResult.Success -> {
+                spaceDao.updateJoinRequestStatus(spaceId, result.data.request.status)
+                ApiResult.Success(result.data)
+            }
             is ApiResult.Failure -> result
         }
     }
@@ -515,14 +513,33 @@ class SpaceRepository(
         spaceId: String
     ): ApiResult.Failure? {
         val target = treeUri.trimEnd('/')
-        val conflict = mappingDao.getByDevice(deviceId)
-            .firstOrNull { it.spaceId != spaceId && it.treeUri.trimEnd('/') == target }
+        val conflicts = mappingDao.getByDevice(deviceId)
+            .filter { it.spaceId != spaceId && it.treeUri.trimEnd('/') == target }
+        if (conflicts.isEmpty()) return null
+        // 空间已在其他设备删除时，本机可能残留映射；它不再占用目录，顺手清理。
+        val orphanSpaceIds = conflicts.map { it.spaceId }
+            .filter { spaceDao.getById(it) == null }
+            .distinct()
+        if (orphanSpaceIds.isNotEmpty()) {
+            database.withTransaction { orphanSpaceIds.forEach { deleteLocalSpaceData(it) } }
+        }
+        val conflict = conflicts.firstOrNull { spaceDao.getById(it.spaceId) != null }
             ?: return null
         val conflictName = spaceDao.getById(conflict.spaceId)?.name ?: "其他空间"
         return ApiResult.Failure(
             "DIRECTORY_IN_USE",
             "该本地目录已绑定空间「$conflictName」，一个本地目录只能绑定一个空间"
         )
+    }
+
+    /** 清除某空间在本机的全部数据（映射、索引、任务、游标与空间行）。 */
+    private suspend fun deleteLocalSpaceData(spaceId: String) {
+        mappingDao.getBySpace(spaceId).forEach { fileDao.clearByMapping(it.id) }
+        syncTaskDao.deleteBySpace(spaceId)
+        syncCursorDao.deleteBySpace(spaceId)
+        pendingDeletionDao.deleteBySpace(spaceId)
+        mappingDao.deleteBySpaceId(spaceId)
+        spaceDao.deleteById(spaceId)
     }
 
     /** 本机在该空间是否有「已选目录、等待主设备同意」的暂存绑定。 */
@@ -784,7 +801,8 @@ class SpaceRepository(
         updatedAt = updatedAt,
         lastSyncedAt = existing?.lastSyncedAt,
         coverPath = existing?.coverPath,
-        coverVersion = coverUpdatedAt
+        coverVersion = coverUpdatedAt,
+        joinRequestStatus = joinRequestStatus ?: existing?.joinRequestStatus
     )
 
     private fun MappingDto.toLocal(existing: LocalFolderMapping?) = LocalFolderMapping(

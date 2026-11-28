@@ -103,6 +103,8 @@ data class SpaceDto(
     val description: String? = null,
     val revision: String = "0",
     val role: String,
+    /** 本机最近一次加入申请的状态；null 表示从未申请或接口未提供。 */
+    val joinRequestStatus: String? = null,
     val memberCount: Int = 0,
     val mappingCount: Int = 0,
     val createdAt: String? = null,

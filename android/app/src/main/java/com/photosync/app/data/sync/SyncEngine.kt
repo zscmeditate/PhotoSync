@@ -25,6 +25,7 @@ import com.photosync.app.data.repository.SyncRepository
 import com.photosync.app.data.remote.SyncLockRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.IOException
 
@@ -182,6 +184,23 @@ class SyncEngine(
      * 供「刷新」按钮使用，成本低、可频繁触发。
      */
     suspend fun runQueuedTasks(): SyncRunResult = syncMutex.withLock { runQueuedTasksLocked() }
+
+    /**
+     * 进程启动或界面回到前台时调用：引擎空闲说明没有任何传输在执行，
+     * 此时仍停留在 RUNNING 的任务一定是上次被取消（离开页面、Worker 被系统停止）或进程被杀留下的，
+     * 统一退回待执行队列，避免界面一直显示「进行中」却没有任何进度。
+     * 在同步锁内执行，正在同步时直接跳过，不会干扰真实传输。
+     */
+    suspend fun recoverAbortedTasksIfIdle() {
+        if (!syncMutex.tryLock()) return
+        try {
+            if (_taskProgress.value.isNotEmpty() || _syncingSpaceIds.value.isNotEmpty()) return
+            repository.recoverAllRunning()
+        } finally {
+            syncMutex.unlock()
+        }
+    }
+
 
     private suspend fun runQueuedTasksLocked(): SyncRunResult {
         val deviceId = repository.currentDeviceId() ?: return SyncRunResult.FAILURE
@@ -686,6 +705,8 @@ class SyncEngine(
             // 用户取消或移到队列末尾：任务行已被删除或重置为 PENDING，本次不再写入状态
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
+            // 同步被取消（离开页面、Worker 被系统停止）：把运行中的任务退回队列，避免一直卡在「进行中」
+            withContext(NonCancellable) { repository.recoverRunning(current.spaceId) }
             throw e
         } catch (e: FolderAccessException) {
             return failUpload(current, "ACCESS_REVOKED", e.message ?: "本地目录授权已失效")
@@ -775,6 +796,8 @@ class SyncEngine(
             }
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
+            // 同步被取消：把运行中的变更任务退回队列，避免一直卡在「进行中」
+            withContext(NonCancellable) { repository.recoverRunning(current.spaceId) }
             throw e
         } catch (e: SyncPlanningException) {
             return failUpload(current, "SYNC_CONTRACT_INVALID", e.message ?: "同步数据无效")
@@ -877,6 +900,9 @@ class SyncEngine(
             }
 
             // 阶段三：逐个处理并确认；游标随确认推进，失败时保持不动（下次重拉重试）。
+            // 永久失败只阻断游标，后续独立事件仍可执行并落库，但一律不确认；
+            // 否则前面一个路径冲突会让后面已预建的删除任务永远停在等待状态。
+            var eventFailed = false
             for (event in events) {
                 val revision = DecimalContract.revision(event.revision)
                 val phaseName = event.payload?.newFileName
@@ -891,8 +917,9 @@ class SyncEngine(
                 when (processEvent(spaceId, deviceId, rules, event)) {
                     SyncRunResult.SUCCESS -> Unit
                     SyncRunResult.RETRY -> return SyncRunResult.RETRY
-                    SyncRunResult.FAILURE -> return SyncRunResult.FAILURE
+                    SyncRunResult.FAILURE -> eventFailed = true
                 }
+                if (eventFailed) continue
                 val ack = when (
                     val result = apiCall {
                         api.acknowledgeChanges(spaceId, SyncAckRequest(deviceId, revision))
@@ -920,7 +947,7 @@ class SyncEngine(
                     )
                 )
             }
-            return SyncRunResult.SUCCESS
+            return if (eventFailed) SyncRunResult.FAILURE else SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1359,6 +1386,8 @@ class SyncEngine(
             // 队列末尾：任务行已重置为 PENDING，下一轮（或本轮其他任务之后）继续
             return SyncRunResult.SUCCESS
         } catch (e: CancellationException) {
+            // 同步被取消（离开页面、Worker 被系统停止）：把运行中的下载退回队列，避免一直卡在「进行中」
+            withContext(NonCancellable) { repository.recoverRunning(current.spaceId) }
             throw e
         } catch (e: DownloadRequestFailureException) {
             return downloadRequestFailure(current, e.failure)

@@ -270,17 +270,9 @@ interface LocalSyncTaskDao {
     @Query("UPDATE local_sync_tasks SET state = 'PENDING', error = NULL, updatedAt = :now WHERE spaceId = :spaceId AND state = 'RUNNING'")
     suspend fun recoverRunning(spaceId: String, now: Long)
 
-    /**
-     * 进程重启后，上次进程留下的 RUNNING 任务已不可能继续（传输进度只会在运行中被更新），
-     * 退回队列，避免界面把陈旧任务一直显示成「进行中」。仅处理本进程启动前更新的行，不影响正在执行的任务。
-     */
-    @Query(
-        """
-        UPDATE local_sync_tasks SET state = 'PENDING', error = NULL, updatedAt = :now
-        WHERE state = 'RUNNING' AND updatedAt < :processStartAt
-        """
-    )
-    suspend fun recoverStaleRunning(processStartAt: Long, now: Long)
+    /** 进程启动/界面回到前台且引擎空闲时，把上次被取消或进程被杀留下的 RUNNING 任务统一退回队列。 */
+    @Query("UPDATE local_sync_tasks SET state = 'PENDING', error = NULL, updatedAt = :now WHERE state = 'RUNNING'")
+    suspend fun recoverAllRunning(now: Long)
 
     // 远端对象已永久丢失的任务重试也必然失败，保留 FAILED 状态供用户查看/取消，避免反复入队。
     @Query(

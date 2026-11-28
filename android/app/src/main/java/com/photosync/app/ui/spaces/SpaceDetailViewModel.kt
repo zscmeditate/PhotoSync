@@ -21,6 +21,7 @@ import com.photosync.app.data.sync.FileFailureInfo
 import com.photosync.app.data.sync.SyncEngine
 import com.photosync.app.data.sync.SyncRunResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -40,7 +41,9 @@ class SpaceDetailViewModel(
     private val syncEngine: SyncEngine,
     private val apiClient: ApiClient,
     private val scheduleSync: () -> Unit,
-    private val spaceId: String
+    private val spaceId: String,
+    /** 应用级作用域：同步不随页面销毁而中断。 */
+    private val appScope: CoroutineScope
 ) : ViewModel() {
     val currentDeviceId: String? = spaceRepository.currentDeviceId()
 
@@ -59,6 +62,11 @@ class SpaceDetailViewModel(
 
     /** 本地批量删除待确认数量：超过保护阈值时云端暂不删除，也不会把文件重新下载回本地。 */
     val pendingDeletionCount: StateFlow<Int> = syncRepository.observePendingDeletionCount(spaceId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    /** 同步日志条数（与同步日志页同源，最多保留最近 200 条）。 */
+    val logCount: StateFlow<Int> = syncRepository.observeRecentTasks(spaceId, 200)
+        .map { it.size }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     private val _resolvingBulkDelete = MutableStateFlow(false)
@@ -420,12 +428,13 @@ class SpaceDetailViewModel(
             viewModelScope.launch { _messages.emit("正在同步中，请稍候") }
             return
         }
-        viewModelScope.launch {
+        appScope.launch {
             _syncing.value = true
             try {
                 syncRepository.requeueFailed(spaceId)
                 // 前台直接执行，避免 MIUI JobScheduler 加的 TIMING_DELAY（实测可达 7 分钟以上）
                 // 仅同步当前空间：点击「立即同步」时只扫描本空间对应的目录，不扫描其他空间。
+                // 使用应用级作用域：返回上一页不会取消正在进行的传输。
                 val result = syncEngine.syncSpace(spaceId)
                 val msg = when (result) {
                     SyncRunResult.SUCCESS -> "同步完成"
@@ -437,14 +446,14 @@ class SpaceDetailViewModel(
                 _syncing.value = false
             }
         }
-        // 兜底：ViewModel 被销毁时 WorkManager 会接管
+        // 兜底：进程被系统回收时 WorkManager 会接管
         scheduleSync()
     }
 
     /** 刷新：仅执行队列中已存在的任务（下载/上传/变更），不扫描、不拉取新变更，与「立即同步」区分。 */
     fun runQueuedTasks() {
         if (_syncing.value) return
-        viewModelScope.launch {
+        appScope.launch {
             _syncing.value = true
             try {
                 val result = syncEngine.runQueuedTasks()

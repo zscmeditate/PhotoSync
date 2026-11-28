@@ -87,6 +87,7 @@ import com.photosync.app.data.sync.SpaceTaskCompletion
 import com.photosync.app.ui.components.AppSnackbarHost
 import com.photosync.app.ui.components.EmptyStateView
 import com.photosync.app.ui.components.SectionHeader
+import com.photosync.app.ui.components.StatTile
 import com.photosync.app.ui.components.SyncStatus
 import com.photosync.app.ui.components.SyncStatusChip
 import com.photosync.app.ui.devices.DeviceListScreen
@@ -380,7 +381,7 @@ private fun HomeOverviewTab(
                 icon = Icons.Filled.Folder,
                 tint = PrimaryBlue,
                 title = "${spaces.size}",
-                subtitle = "同步空间",
+                subtitle = "云端空间",
                 titleColor = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier
                     .weight(1f)
@@ -390,7 +391,7 @@ private fun HomeOverviewTab(
                 icon = Icons.Filled.Sync,
                 tint = PrimaryBlue,
                 title = "${mappings.size}",
-                subtitle = "本机同步空间",
+                subtitle = "本机空间",
                 titleColor = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier
                     .weight(1f)
@@ -525,7 +526,7 @@ private fun syncRemainingText(stats: SyncTaskStats?, session: SpaceTaskCompletio
     return if (lines.isEmpty()) "正在同步…" else lines.joinToString("\n")
 }
 
-/** 顶部卡片统一样式：左侧图标，右侧上下两行文字（水平居中、垂直居中）。 */
+/** 顶部卡片统一样式：上方一行大字，下方一行「小图标 + 小字」。 */
 @Composable
 private fun OverviewCard(
     icon: ImageVector,
@@ -536,47 +537,15 @@ private fun OverviewCard(
     iconModifier: Modifier = Modifier,
     titleColor: Color = tint
 ) {
-    Row(
+    StatTile(
+        title = title,
+        label = subtitle,
+        icon = icon,
+        tint = tint,
+        titleColor = titleColor,
+        iconModifier = iconModifier,
         modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier
-                .size(28.dp)
-                .then(iconModifier)
-        )
-        Spacer(Modifier.width(8.dp))
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = title,
-                color = titleColor,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = subtitle,
-                color = OnSurfaceMuted,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
-            )
-        }
-    }
+    )
 }
 
 @Composable

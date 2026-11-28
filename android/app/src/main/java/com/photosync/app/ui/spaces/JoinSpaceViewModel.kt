@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** 列出当前账号下已经存在、但本机尚未绑定目录的空间，供「加入空间」选择。 */
+/** 列出本机未绑定目录且没有待审批申请的空间，供「加入空间」选择。 */
 class JoinSpaceViewModel(
     private val spaceRepository: SpaceRepository
 ) : ViewModel() {
@@ -47,6 +47,8 @@ class JoinSpaceViewModel(
         }
         val candidates = mutableListOf<LocalSpace>()
         for (space in spaceRepository.getAllSpaces()) {
+            // 待审批期间不允许重复申请；管理员拒绝后状态变为 rejected，可重新出现。
+            if (space.joinRequestStatus == "pending") continue
             when (val result = spaceRepository.hasDeviceMapping(space.id, deviceId)) {
                 is ApiResult.Success -> if (!result.data) candidates += space
                 is ApiResult.Failure -> {

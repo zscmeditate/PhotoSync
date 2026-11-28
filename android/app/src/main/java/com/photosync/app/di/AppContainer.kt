@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.photosync.app.data.local.MIGRATION_1_2
 import com.photosync.app.data.local.MIGRATION_2_3
 import com.photosync.app.data.local.MIGRATION_3_4
+import com.photosync.app.data.local.MIGRATION_4_5
 import com.photosync.app.data.local.SpaceCoverStore
 import com.photosync.app.data.local.SyncDatabase
 import com.photosync.app.data.prefs.PendingBindingStore
@@ -43,7 +44,7 @@ class AppContainer(context: Context) {
         SyncDatabase::class.java,
         "photosync.db"
     )
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
         // 未命中迁移的结构变化直接重建（旧版本库自动清空，避免旧数据干扰）
         .fallbackToDestructiveMigration()
         .build()

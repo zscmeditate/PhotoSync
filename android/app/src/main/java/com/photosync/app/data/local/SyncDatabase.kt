@@ -67,7 +67,9 @@ data class LocalSpace(
     /** 本机为该空间选择的头像照片（应用私有目录内的文件路径），未设置为 null。 */
     val coverPath: String? = null,
     /** 头像对应的服务端版本（coverUpdatedAt），用于判断是否需要重新下载。 */
-    val coverVersion: String? = null
+    val coverVersion: String? = null,
+    /** 本机最近一次加入申请的状态：pending / approved / rejected。 */
+    val joinRequestStatus: String? = null
 )
 
 @Dao
@@ -92,6 +94,9 @@ interface LocalSpaceDao {
 
     @Query("UPDATE local_spaces SET coverPath = :path, coverVersion = :version WHERE id = :spaceId")
     suspend fun updateCover(spaceId: String, path: String?, version: String?)
+
+    @Query("UPDATE local_spaces SET joinRequestStatus = :status WHERE id = :spaceId")
+    suspend fun updateJoinRequestStatus(spaceId: String, status: String?)
 
     @Query("DELETE FROM local_spaces WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -151,6 +156,10 @@ interface LocalFolderMappingDao {
 
     @Query("SELECT * FROM local_folder_mappings WHERE spaceId = :spaceId")
     suspend fun getBySpace(spaceId: String): List<LocalFolderMapping>
+
+    /** 空间已被其他设备删除后残留的映射：对应空间行已不存在。 */
+    @Query("SELECT * FROM local_folder_mappings WHERE spaceId NOT IN (SELECT id FROM local_spaces)")
+    suspend fun getWithoutSpace(): List<LocalFolderMapping>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(mapping: LocalFolderMapping)
@@ -320,7 +329,7 @@ interface LocalFileIndexDao {
         LocalPendingDeletion::class
     ],
     // 基线版本：历史迁移已合并，后续结构变化从 1 开始新增迁移
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class SyncDatabase : RoomDatabase() {
@@ -369,5 +378,12 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
                 "ON `local_pending_deletions` (`spaceId`)"
         )
         db.execSQL("ALTER TABLE local_sync_tasks ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+/** v4 -> v5：加入空间列表需要区分待审批与已拒绝的申请。 */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE local_spaces ADD COLUMN joinRequestStatus TEXT")
     }
 }
